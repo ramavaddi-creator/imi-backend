@@ -1,11 +1,12 @@
 export interface Env {
   DB: D1Database;
+  API_SECRET: string;
 }
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
 };
 
 function json(data: unknown, status = 200): Response {
@@ -139,6 +140,19 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
+    // CHANGE: shared-secret auth, required before any public deployment.
+    // Set via `wrangler secret put API_SECRET` -- never committed to the
+    // repo. The frontend sends the same value via VITE_API_KEY, itself set
+    // in .env.production, not committed either. This is a minimal gate
+    // appropriate for a single-tenant internal tool, not a full user-auth
+    // system -- it stops casual/automated discovery of the URL from reading
+    // or writing data, which is what an unauthenticated public Worker
+    // cannot prevent at all.
+    const providedKey = request.headers.get('X-API-Key');
+    if (!env.API_SECRET || providedKey !== env.API_SECRET) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
+
     // ============================================================
     // INBOX
     // ============================================================
@@ -227,9 +241,6 @@ export default {
       const body = await request.json<any>();
       const fields: string[] = [];
       const values: any[] = [];
-      // CHANGE: verificationStatus updates independently of status, per the
-      // review's decoupling requirement -- updating a record never silently
-      // changes its verification state.
       if (body.status) { fields.push('status = ?'); values.push(body.status); }
       if (body.verificationStatus) { fields.push('verification_status = ?'); values.push(body.verificationStatus); }
       if (body.interpretation) { fields.push('interpretation_json = ?'); values.push(JSON.stringify(body.interpretation)); }
