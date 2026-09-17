@@ -1,0 +1,8 @@
+name = "imi-backend"
+main = "src/index.ts"
+compatibility_date = "2026-07-17"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "imi-db"
+database_id = "81146352-897e-4e7f-891e-8c9748abc2e0"
