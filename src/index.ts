@@ -15,9 +15,17 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
-// CHANGE: maps the D1 row's snake_case columns back to the exact camelCase
-// shape IMI's frontend InboxItem type already expects, so the frontend swap
-// (a later step) is a data-source change only, not a type change.
+function parseJsonField<T>(value: string | null, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+// ---------- Inbox ----------
+
 function rowToInboxItem(row: any) {
   return {
     id: row.id,
@@ -40,28 +48,109 @@ function rowToInboxItem(row: any) {
   };
 }
 
+// ---------- Intelligence Records ----------
+
+function rowToRecord(row: any) {
+  return {
+    id: row.id,
+    code: row.code,
+    domain: row.domain,
+    recordType: row.record_type,
+    title: row.title,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    author: row.author,
+    authorRole: row.author_role,
+    observation: JSON.parse(row.observation_json),
+    interpretation: parseJsonField(row.interpretation_json, undefined),
+    linkedEvidence: parseJsonField(row.linked_evidence_json, []),
+    assumptions: parseJsonField(row.assumptions_json, []),
+    openQuestions: parseJsonField(row.open_questions_json, []),
+    learningStrength: row.learning_strength,
+    verificationFlag: row.verification_flag || undefined,
+    sourceCategory: row.source_category || undefined,
+    sourceType: row.source_type || undefined,
+    evidenceWeight: row.evidence_weight || undefined,
+    commercialRelevance: row.commercial_relevance || undefined,
+    verificationStatus: row.verification_status || undefined,
+  };
+}
+
+// ---------- Decisions ----------
+
+function rowToDecision(row: any) {
+  return {
+    id: row.id,
+    code: row.code,
+    domain: row.domain,
+    title: row.title,
+    problemStatement: row.problem_statement,
+    associatedRecordCode: row.associated_record_code,
+    approvalClass: row.approval_class,
+    approvalStatus: row.approval_status,
+    approverRequired: row.approver_required,
+    approvedBy: row.approved_by || undefined,
+    approvedAt: row.approved_at || undefined,
+    retrospective: row.retrospective,
+    optionsConsidered: JSON.parse(row.options_considered_json),
+    selectedOption: row.selected_option,
+    rationale: row.rationale,
+    confidence: { level: row.confidence_level, reason: row.confidence_reason },
+    actionsDeliberatelyAvoided: parseJsonField(row.actions_avoided_json, []),
+    risks: parseJsonField(row.risks_json, []),
+    schemaFitNote: row.schema_fit_note || undefined,
+  };
+}
+
+// ---------- Outcomes ----------
+
+function rowToOutcome(row: any) {
+  return {
+    id: row.id,
+    code: row.code,
+    domain: row.domain,
+    decisionCode: row.decision_code,
+    actionTaken: row.action_taken,
+    actualOutcome: row.actual_outcome,
+    dateEvaluated: row.date_evaluated,
+    evaluator: row.evaluator,
+    retrospective: row.retrospective,
+    quantitativeResults: parseJsonField(row.quantitative_results_json, []),
+    qualitativeResults: parseJsonField(row.qualitative_results_json, []),
+    attributionConfidence: { level: row.attribution_confidence_level, reason: row.attribution_confidence_reason },
+    unexpectedEffects: parseJsonField(row.unexpected_effects_json, []),
+    resultingLearning: JSON.parse(row.resulting_learning_json),
+  };
+}
+
+async function nextCode(env: Env, table: string, prefix: string): Promise<string> {
+  const countRow = await env.DB.prepare(`SELECT COUNT(*) as n FROM ${table}`).first<{ n: number }>();
+  const seq = (countRow?.n ?? 0) + 1;
+  return `${prefix}-${String(seq).padStart(4, '0')}`;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const path = url.pathname;
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
-    // GET /api/inbox — list everything, newest first
-    if (request.method === 'GET' && url.pathname === '/api/inbox') {
+    // ============================================================
+    // INBOX
+    // ============================================================
+    if (request.method === 'GET' && path === '/api/inbox') {
       const { results } = await env.DB.prepare('SELECT * FROM inbox_items ORDER BY created_at DESC').all();
       return json((results || []).map(rowToInboxItem));
     }
 
-    // POST /api/inbox — create a new item (mirrors HomeTodayScreen/InboxScreen's onAddItemToInbox payload)
-    if (request.method === 'POST' && url.pathname === '/api/inbox') {
+    if (request.method === 'POST' && path === '/api/inbox') {
       const body = await request.json<any>();
-
-      const countRow = await env.DB.prepare('SELECT COUNT(*) as n FROM inbox_items').first<{ n: number }>();
-      const seq = (countRow?.n ?? 0) + 1;
       const id = `inbox-${Date.now()}`;
-      const code = `INB-${String(seq).padStart(4, '0')}`;
+      const code = await nextCode(env, 'inbox_items', 'INB');
 
       await env.DB.prepare(
         `INSERT INTO inbox_items
@@ -71,24 +160,10 @@ export default {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
         .bind(
-          id,
-          code,
-          'iddav-marketing-intelligence',
-          body.type,
-          body.date,
-          body.summary,
-          body.origin,
-          body.submittedBy,
-          body.submitterRole,
-          body.confidence?.level ?? null,
-          body.confidence?.reason ?? null,
-          body.retrospective,
-          body.status ?? 'pending',
-          body.fullText,
-          body.sourceReference ?? null,
-          body.attachments ? JSON.stringify(body.attachments) : null,
-          body.sourceCategory ?? null,
-          body.sourceType ?? null
+          id, code, 'iddav-marketing-intelligence', body.type, body.date, body.summary, body.origin,
+          body.submittedBy, body.submitterRole, body.confidence?.level ?? null, body.confidence?.reason ?? null,
+          body.retrospective, body.status ?? 'pending', body.fullText, body.sourceReference ?? null,
+          body.attachments ? JSON.stringify(body.attachments) : null, body.sourceCategory ?? null, body.sourceType ?? null
         )
         .run();
 
@@ -96,17 +171,160 @@ export default {
       return json(rowToInboxItem(row), 201);
     }
 
-    // PATCH /api/inbox/:id — triage action (ignore/archive/verify/promote all just set status)
-    const patchMatch = url.pathname.match(/^\/api\/inbox\/([^/]+)$/);
-    if (request.method === 'PATCH' && patchMatch) {
-      const id = patchMatch[1];
+    const inboxPatchMatch = path.match(/^\/api\/inbox\/([^/]+)$/);
+    if (request.method === 'PATCH' && inboxPatchMatch) {
+      const id = inboxPatchMatch[1];
       const body = await request.json<any>();
       if (!body.status) return json({ error: 'status is required' }, 400);
-
       await env.DB.prepare('UPDATE inbox_items SET status = ? WHERE id = ?').bind(body.status, id).run();
       const row = await env.DB.prepare('SELECT * FROM inbox_items WHERE id = ?').bind(id).first();
       if (!row) return json({ error: 'not found' }, 404);
       return json(rowToInboxItem(row));
+    }
+
+    // ============================================================
+    // INTELLIGENCE RECORDS
+    // ============================================================
+    if (request.method === 'GET' && path === '/api/records') {
+      const { results } = await env.DB.prepare('SELECT * FROM intelligence_records ORDER BY created_at DESC').all();
+      return json((results || []).map(rowToRecord));
+    }
+
+    if (request.method === 'POST' && path === '/api/records') {
+      const body = await request.json<any>();
+      const id = `rec-${Date.now()}`;
+      const code = await nextCode(env, 'intelligence_records', 'INT');
+      const now = new Date().toISOString().replace('T', ' ').slice(0, 16);
+
+      await env.DB.prepare(
+        `INSERT INTO intelligence_records
+           (id, code, domain, record_type, title, status, created_at, updated_at, author, author_role,
+            observation_json, interpretation_json, linked_evidence_json, assumptions_json, open_questions_json,
+            learning_strength, verification_flag, source_category, source_type, evidence_weight,
+            commercial_relevance, verification_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+        .bind(
+          id, code, 'iddav-marketing-intelligence', body.recordType, body.title, body.status ?? 'under_review',
+          body.createdAt ?? now, body.updatedAt ?? now, body.author, body.authorRole,
+          JSON.stringify(body.observation), body.interpretation ? JSON.stringify(body.interpretation) : null,
+          body.linkedEvidence ? JSON.stringify(body.linkedEvidence) : null,
+          body.assumptions ? JSON.stringify(body.assumptions) : null,
+          body.openQuestions ? JSON.stringify(body.openQuestions) : null,
+          body.learningStrength ?? 'provisional', body.verificationFlag ?? null, body.sourceCategory ?? null,
+          body.sourceType ?? null, body.evidenceWeight ?? null, body.commercialRelevance ?? null,
+          body.verificationStatus ?? 'unverified'
+        )
+        .run();
+
+      const row = await env.DB.prepare('SELECT * FROM intelligence_records WHERE id = ?').bind(id).first();
+      return json(rowToRecord(row), 201);
+    }
+
+    const recordPatchMatch = path.match(/^\/api\/records\/([^/]+)$/);
+    if (request.method === 'PATCH' && recordPatchMatch) {
+      const id = recordPatchMatch[1];
+      const body = await request.json<any>();
+      const fields: string[] = [];
+      const values: any[] = [];
+      // CHANGE: verificationStatus updates independently of status, per the
+      // review's decoupling requirement -- updating a record never silently
+      // changes its verification state.
+      if (body.status) { fields.push('status = ?'); values.push(body.status); }
+      if (body.verificationStatus) { fields.push('verification_status = ?'); values.push(body.verificationStatus); }
+      if (body.interpretation) { fields.push('interpretation_json = ?'); values.push(JSON.stringify(body.interpretation)); }
+      if (fields.length === 0) return json({ error: 'no updatable fields provided' }, 400);
+      fields.push('updated_at = ?');
+      values.push(new Date().toISOString().replace('T', ' ').slice(0, 16));
+      values.push(id);
+      await env.DB.prepare(`UPDATE intelligence_records SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
+      const row = await env.DB.prepare('SELECT * FROM intelligence_records WHERE id = ?').bind(id).first();
+      if (!row) return json({ error: 'not found' }, 404);
+      return json(rowToRecord(row));
+    }
+
+    // ============================================================
+    // DECISIONS
+    // ============================================================
+    if (request.method === 'GET' && path === '/api/decisions') {
+      const { results } = await env.DB.prepare('SELECT * FROM decision_items ORDER BY inserted_at DESC').all();
+      return json((results || []).map(rowToDecision));
+    }
+
+    if (request.method === 'POST' && path === '/api/decisions') {
+      const body = await request.json<any>();
+      const id = `dec-${Date.now()}`;
+      const code = await nextCode(env, 'decision_items', 'DEC');
+
+      await env.DB.prepare(
+        `INSERT INTO decision_items
+           (id, code, domain, title, problem_statement, associated_record_code, approval_class, approval_status,
+            approver_required, approved_by, approved_at, retrospective, options_considered_json, selected_option,
+            rationale, confidence_level, confidence_reason, actions_avoided_json, risks_json, schema_fit_note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+        .bind(
+          id, code, 'iddav-marketing-intelligence', body.title, body.problemStatement, body.associatedRecordCode,
+          body.approvalClass, body.approvalStatus ?? 'pending', body.approverRequired, body.approvedBy ?? null,
+          body.approvedAt ?? null, body.retrospective, JSON.stringify(body.optionsConsidered), body.selectedOption,
+          body.rationale, body.confidence?.level, body.confidence?.reason,
+          body.actionsDeliberatelyAvoided ? JSON.stringify(body.actionsDeliberatelyAvoided) : null,
+          body.risks ? JSON.stringify(body.risks) : null, body.schemaFitNote ?? null
+        )
+        .run();
+
+      const row = await env.DB.prepare('SELECT * FROM decision_items WHERE id = ?').bind(id).first();
+      return json(rowToDecision(row), 201);
+    }
+
+    const decisionPatchMatch = path.match(/^\/api\/decisions\/([^/]+)$/);
+    if (request.method === 'PATCH' && decisionPatchMatch) {
+      const id = decisionPatchMatch[1];
+      const body = await request.json<any>();
+      if (!body.approvalStatus) return json({ error: 'approvalStatus is required' }, 400);
+      await env.DB.prepare(
+        'UPDATE decision_items SET approval_status = ?, approved_by = ?, approved_at = ? WHERE id = ?'
+      )
+        .bind(body.approvalStatus, body.approvedBy ?? null, body.approvedAt ?? null, id)
+        .run();
+      const row = await env.DB.prepare('SELECT * FROM decision_items WHERE id = ?').bind(id).first();
+      if (!row) return json({ error: 'not found' }, 404);
+      return json(rowToDecision(row));
+    }
+
+    // ============================================================
+    // OUTCOMES
+    // ============================================================
+    if (request.method === 'GET' && path === '/api/outcomes') {
+      const { results } = await env.DB.prepare('SELECT * FROM outcome_items ORDER BY inserted_at DESC').all();
+      return json((results || []).map(rowToOutcome));
+    }
+
+    if (request.method === 'POST' && path === '/api/outcomes') {
+      const body = await request.json<any>();
+      const id = `out-${Date.now()}`;
+      const code = await nextCode(env, 'outcome_items', 'OUT');
+
+      await env.DB.prepare(
+        `INSERT INTO outcome_items
+           (id, code, domain, decision_code, action_taken, actual_outcome, date_evaluated, evaluator, retrospective,
+            quantitative_results_json, qualitative_results_json, attribution_confidence_level,
+            attribution_confidence_reason, unexpected_effects_json, resulting_learning_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+        .bind(
+          id, code, 'iddav-marketing-intelligence', body.decisionCode, body.actionTaken, body.actualOutcome,
+          body.dateEvaluated, body.evaluator, body.retrospective,
+          body.quantitativeResults ? JSON.stringify(body.quantitativeResults) : null,
+          body.qualitativeResults ? JSON.stringify(body.qualitativeResults) : null,
+          body.attributionConfidence?.level, body.attributionConfidence?.reason,
+          body.unexpectedEffects ? JSON.stringify(body.unexpectedEffects) : null,
+          JSON.stringify(body.resultingLearning)
+        )
+        .run();
+
+      const row = await env.DB.prepare('SELECT * FROM outcome_items WHERE id = ?').bind(id).first();
+      return json(rowToOutcome(row), 201);
     }
 
     return json({ error: 'not found' }, 404);
