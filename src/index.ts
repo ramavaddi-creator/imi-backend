@@ -46,6 +46,7 @@ function rowToInboxItem(row: any) {
     attachments: row.attachments_json ? JSON.parse(row.attachments_json) : undefined,
     sourceCategory: row.source_category || undefined,
     sourceType: row.source_type || undefined,
+    verificationStatus: row.verification_status || undefined,
   };
 }
 
@@ -101,6 +102,8 @@ function rowToDecision(row: any) {
     actionsDeliberatelyAvoided: parseJsonField(row.actions_avoided_json, []),
     risks: parseJsonField(row.risks_json, []),
     schemaFitNote: row.schema_fit_note || undefined,
+    expectedOutcome: row.expected_outcome || undefined,
+    measurementCriteria: row.measurement_criteria || undefined,
   };
 }
 
@@ -170,14 +173,15 @@ export default {
         `INSERT INTO inbox_items
            (id, code, domain, type, date, summary, origin, submitted_by, submitter_role,
             confidence_level, confidence_reason, retrospective, status, full_text,
-            source_reference, attachments_json, source_category, source_type)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            source_reference, attachments_json, source_category, source_type, verification_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
         .bind(
           id, code, 'iddav-marketing-intelligence', body.type, body.date, body.summary, body.origin,
           body.submittedBy, body.submitterRole, body.confidence?.level ?? null, body.confidence?.reason ?? null,
           body.retrospective, body.status ?? 'pending', body.fullText, body.sourceReference ?? null,
-          body.attachments ? JSON.stringify(body.attachments) : null, body.sourceCategory ?? null, body.sourceType ?? null
+          body.attachments ? JSON.stringify(body.attachments) : null, body.sourceCategory ?? null, body.sourceType ?? null,
+          body.verificationStatus ?? 'unverified'
         )
         .run();
 
@@ -189,8 +193,16 @@ export default {
     if (request.method === 'PATCH' && inboxPatchMatch) {
       const id = inboxPatchMatch[1];
       const body = await request.json<any>();
-      if (!body.status) return json({ error: 'status is required' }, 400);
-      await env.DB.prepare('UPDATE inbox_items SET status = ? WHERE id = ?').bind(body.status, id).run();
+      // CHANGE: status and verificationStatus now update independently --
+      // a triage action never has to touch both, matching the same pattern
+      // already used for /api/records.
+      const fields: string[] = [];
+      const values: any[] = [];
+      if (body.status) { fields.push('status = ?'); values.push(body.status); }
+      if (body.verificationStatus) { fields.push('verification_status = ?'); values.push(body.verificationStatus); }
+      if (fields.length === 0) return json({ error: 'status or verificationStatus is required' }, 400);
+      values.push(id);
+      await env.DB.prepare(`UPDATE inbox_items SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
       const row = await env.DB.prepare('SELECT * FROM inbox_items WHERE id = ?').bind(id).first();
       if (!row) return json({ error: 'not found' }, 404);
       return json(rowToInboxItem(row));
@@ -271,8 +283,9 @@ export default {
         `INSERT INTO decision_items
            (id, code, domain, title, problem_statement, associated_record_code, approval_class, approval_status,
             approver_required, approved_by, approved_at, retrospective, options_considered_json, selected_option,
-            rationale, confidence_level, confidence_reason, actions_avoided_json, risks_json, schema_fit_note)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            rationale, confidence_level, confidence_reason, actions_avoided_json, risks_json, schema_fit_note,
+            expected_outcome, measurement_criteria)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
         .bind(
           id, code, 'iddav-marketing-intelligence', body.title, body.problemStatement, body.associatedRecordCode,
@@ -280,7 +293,8 @@ export default {
           body.approvedAt ?? null, body.retrospective, JSON.stringify(body.optionsConsidered), body.selectedOption,
           body.rationale, body.confidence?.level, body.confidence?.reason,
           body.actionsDeliberatelyAvoided ? JSON.stringify(body.actionsDeliberatelyAvoided) : null,
-          body.risks ? JSON.stringify(body.risks) : null, body.schemaFitNote ?? null
+          body.risks ? JSON.stringify(body.risks) : null, body.schemaFitNote ?? null,
+          body.expectedOutcome ?? null, body.measurementCriteria ?? null
         )
         .run();
 
