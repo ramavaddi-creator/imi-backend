@@ -1,6 +1,10 @@
 export interface Env {
   DB: D1Database;
   API_SECRET: string;
+  // CHANGE: both optional -- AI Assist works with either, neither, or both
+  // configured, per explicit direction not to force a specific provider.
+  ANTHROPIC_API_KEY?: string;
+  OPENAI_API_KEY?: string;
 }
 
 const CORS_HEADERS = {
@@ -156,6 +160,74 @@ export default {
     const providedKey = request.headers.get('X-API-Key');
     if (!env.API_SECRET || providedKey !== env.API_SECRET) {
       return json({ error: 'Unauthorized' }, 401);
+    }
+
+    // ============================================================
+    // AI ASSIST -- new: lets capture forms offer an optional, human-
+    // reviewed draft improvement. Never runs automatically, never submits
+    // on your behalf -- returns a suggestion the person explicitly accepts,
+    // edits, or discards.
+    // ============================================================
+    if (request.method === 'GET' && path === '/api/ai/providers') {
+      return json({
+        claude: Boolean(env.ANTHROPIC_API_KEY),
+        chatgpt: Boolean(env.OPENAI_API_KEY),
+      });
+    }
+
+    if (request.method === 'POST' && path === '/api/ai/assist') {
+      const body = await request.json<any>();
+      const text = (body.text || '').trim();
+      const provider = body.provider;
+      if (!text) return json({ error: 'text is required' }, 400);
+      if (provider !== 'claude' && provider !== 'chatgpt') return json({ error: 'provider must be "claude" or "chatgpt"' }, 400);
+
+      const prompt = `You are helping polish a short piece of operational/field-observation text for a wildlife tourism business (Iddav WildStay / Sri Antra, near Tadoba Tiger Reserve, India). Improve clarity, fix grammar and typos, and remove or soften any inappropriate or unprofessional language. Preserve the original meaning and roughly the same length -- do not invent new facts, claims, or details that weren't in the original. Return ONLY the improved text, with no preamble, no quotation marks, and no explanation.\n\nOriginal text:\n${text}`;
+
+      if (provider === 'claude') {
+        if (!env.ANTHROPIC_API_KEY) return json({ error: 'Claude is not configured on this backend' }, 400);
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-5',
+            max_tokens: 500,
+            messages: [{ role: 'user', content: prompt }],
+          }),
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          return json({ error: `Claude API error: ${res.status} ${errText}` }, 502);
+        }
+        const data = await res.json<any>();
+        const improved = data.content?.[0]?.text?.trim() || text;
+        return json({ improved });
+      }
+
+      if (!env.OPENAI_API_KEY) return json({ error: 'ChatGPT is not configured on this backend' }, 400);
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          max_tokens: 500,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        return json({ error: `ChatGPT API error: ${res.status} ${errText}` }, 502);
+      }
+      const data = await res.json<any>();
+      const improved = data.choices?.[0]?.message?.content?.trim() || text;
+      return json({ improved });
     }
 
     // ============================================================
