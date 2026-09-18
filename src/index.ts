@@ -47,6 +47,8 @@ function rowToInboxItem(row: any) {
     sourceCategory: row.source_category || undefined,
     sourceType: row.source_type || undefined,
     verificationStatus: row.verification_status || undefined,
+    evidenceWeight: row.evidence_weight || undefined,
+    commercialRelevance: row.commercial_relevance || undefined,
   };
 }
 
@@ -173,15 +175,16 @@ export default {
         `INSERT INTO inbox_items
            (id, code, domain, type, date, summary, origin, submitted_by, submitter_role,
             confidence_level, confidence_reason, retrospective, status, full_text,
-            source_reference, attachments_json, source_category, source_type, verification_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            source_reference, attachments_json, source_category, source_type, verification_status,
+            evidence_weight, commercial_relevance)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
         .bind(
           id, code, 'iddav-marketing-intelligence', body.type, body.date, body.summary, body.origin,
           body.submittedBy, body.submitterRole, body.confidence?.level ?? null, body.confidence?.reason ?? null,
           body.retrospective, body.status ?? 'pending', body.fullText, body.sourceReference ?? null,
           body.attachments ? JSON.stringify(body.attachments) : null, body.sourceCategory ?? null, body.sourceType ?? null,
-          body.verificationStatus ?? 'unverified'
+          body.verificationStatus ?? 'unverified', body.evidenceWeight ?? null, body.commercialRelevance ?? null
         )
         .run();
 
