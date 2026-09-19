@@ -1,3 +1,5 @@
+import { XMLParser } from 'fast-xml-parser';
+
 export interface Env {
   DB: D1Database;
   API_SECRET: string;
@@ -160,6 +162,59 @@ export default {
     const providedKey = request.headers.get('X-API-Key');
     if (!env.API_SECRET || providedKey !== env.API_SECRET) {
       return json({ error: 'Unauthorized' }, 401);
+    }
+
+    // ============================================================
+    // NEWS / RSS -- new: reads a small, curated set of Google News RSS
+    // search feeds (public, no API key) relevant to Iddav's context.
+    // Read-only, server-side (RSS feeds generally don't support CORS for
+    // direct browser fetches, which is why this lives in the backend).
+    // ============================================================
+    if (request.method === 'GET' && path === '/api/news/feed') {
+      // CHANGE: switched from Google News RSS (confirmed blocked with a 503
+      // for any Cloudflare-Workers-origin request, regardless of headers) to
+      // real publisher feeds. Mongabay is a genuine environmental journalism
+      // outlet whose RSS feeds are meant to be consumed programmatically.
+      const feeds = [
+        { url: 'https://india.mongabay.com/feed/', label: 'Mongabay India' },
+        { url: 'https://news.mongabay.com/feed/', label: 'Mongabay Global' },
+      ];
+
+      const parser = new XMLParser({ ignoreAttributes: false });
+      const allItems: { title: string; link: string; pubDate: string; source: string }[] = [];
+
+      for (const feed of feeds) {
+        try {
+          const res = await fetch(feed.url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+          });
+          if (!res.ok) continue;
+          const xml = await res.text();
+          const parsed = parser.parse(xml);
+          const rawItems = parsed?.rss?.channel?.item;
+          if (!rawItems) continue;
+          const itemsArray = Array.isArray(rawItems) ? rawItems : [rawItems];
+          for (const item of itemsArray.slice(0, 10)) {
+            if (!item.title || !item.link) continue;
+            allItems.push({
+              title: String(item.title),
+              link: String(item.link),
+              pubDate: String(item.pubDate || ''),
+              source: feed.label,
+            });
+          }
+        } catch (err) {
+          continue;
+        }
+      }
+
+      allItems.sort((a, b) => {
+        const da = new Date(a.pubDate).getTime() || 0;
+        const db = new Date(b.pubDate).getTime() || 0;
+        return db - da;
+      });
+
+      return json({ items: allItems.slice(0, 20) });
     }
 
     // ============================================================
