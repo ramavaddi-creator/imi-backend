@@ -181,7 +181,7 @@ export default {
       ];
 
       const parser = new XMLParser({ ignoreAttributes: false });
-      const allItems: { title: string; link: string; pubDate: string; source: string }[] = [];
+      const allItems: { title: string; description: string; link: string; pubDate: string; source: string }[] = [];
 
       for (const feed of feeds) {
         try {
@@ -198,6 +198,9 @@ export default {
             if (!item.title || !item.link) continue;
             allItems.push({
               title: String(item.title),
+              // CHANGE: new -- description captured too, since relevance
+              // scoring now checks title + description, not title alone.
+              description: String(item.description || ''),
               link: String(item.link),
               pubDate: String(item.pubDate || ''),
               source: feed.label,
@@ -208,13 +211,72 @@ export default {
         }
       }
 
-      allItems.sort((a, b) => {
+      // CHANGE: replaced "return everything" with weighted relevance
+      // scoring per direct feedback -- Mongabay's raw feeds are global/
+      // general-environment, so most items were noise (Taylor Swift's bug,
+      // UK prizes, rooftop sprinklers). A single broad term alone won't
+      // clear the threshold, but combines naturally with a real wildlife
+      // signal when both appear in the same article (e.g. "mining" +
+      // "tiger reserve" together clears the bar without separate
+      // co-occurrence logic -- the scores just add up).
+      const WEIGHTED_KEYWORDS: [string, number][] = [
+        ['tadoba', 5], ['chandrapur', 5],
+        ['tiger reserve', 4], ['wildlife corridor', 4], ['tiger', 4],
+        ['human-wildlife conflict', 4], ['human-animal conflict', 4], ['poaching', 4],
+        ['wildlife trafficking', 4],
+        ['leopard', 3], ['elephant', 3], ['cheetah', 3], ['lion', 3],
+        ['rhino', 3], ['dhole', 3], ['wolf', 3], ['sloth bear', 3], ['gaur', 3],
+        ['pangolin', 3], ['caracal', 3], ['hyena', 3], ['vulture', 3], ['gharial', 3],
+        ['habitat fragmentation', 3], ['connectivity', 3], ['dispersal', 3],
+        ['roadkill', 3], ['electrocution', 3], ['snare', 3],
+        ['national park', 2], ['wildlife sanctuary', 2], ['sanctuary', 2],
+        ['conservation reserve', 2], ['biosphere reserve', 2], ['protected area', 2],
+        ['buffer zone', 2], ['core zone', 2],
+        ['biodiversity', 2], ['prey base', 2], ['carrying capacity', 2],
+        ['coexistence', 2], ['habitat loss', 2], ['habitat', 2], ['conservation', 2],
+        ['forest fire', 2], ['encroachment', 2], ['deforestation', 2],
+        ['kuno', 2], ['pench', 2], ['kanha', 2], ['satpura', 2], ['melghat', 2],
+        ['navegaon-nagzira', 2], ['bor', 2], ['umred', 2], ['tipeshwar', 2],
+        ['kawal', 2], ['indravati', 2], ['bandhavgarh', 2], ['panna', 2],
+        ['central india forests', 2],
+        ['maharashtra', 1], ['vidarbha', 1], ['central india', 1],
+        ['mining', 1], ['railway', 1], ['highway', 1], ['linear infrastructure', 1],
+        ['hunting', 1], ['eco-tourism', 1], ['wildlife tourism', 1],
+        ['safari tourism', 1], ['responsible tourism', 1], ['safari', 1], ['forest', 1],
+      ];
+
+      const NEGATIVE_KEYWORDS = [
+        'cricket', 'football', 'stock market', 'bollywood', 'celebrity',
+        'fashion', 'recipe', 'smartphone', 'gaming', 'crypto', 'horoscope',
+        'movie review',
+      ];
+
+      const RELEVANCE_THRESHOLD = 4;
+
+      // CHANGE: fixed a real false-positive -- plain .includes() matched
+      // 'bor' (Bor Tiger Reserve) inside unrelated words like "borders",
+      // which wrongly let an Indonesia-trafficking story pass. Word-boundary
+      // regex means a keyword only matches the actual word, not a substring
+      // buried inside a longer unrelated one.
+      const matchesKeyword = (text: string, kw: string): boolean => {
+        const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+      };
+
+      const relevantItems = allItems.filter((item) => {
+        const t = `${item.title} ${item.description}`.toLowerCase();
+        if (NEGATIVE_KEYWORDS.some((kw) => matchesKeyword(t, kw))) return false;
+        const score = WEIGHTED_KEYWORDS.reduce((sum, [kw, weight]) => (matchesKeyword(t, kw) ? sum + weight : sum), 0);
+        return score >= RELEVANCE_THRESHOLD;
+      });
+
+      relevantItems.sort((a, b) => {
         const da = new Date(a.pubDate).getTime() || 0;
         const db = new Date(b.pubDate).getTime() || 0;
         return db - da;
       });
 
-      return json({ items: allItems.slice(0, 20) });
+      return json({ items: relevantItems.slice(0, 20) });
     }
 
     // ============================================================
