@@ -1,0 +1,79 @@
+<!--
+  Iddav WildStay — enquiry form for iddavwildstay.com
+  Paste this block where the form should appear. Change WORKER_URL once.
+  Enquiries land in IMI → Enquiries, already linked to the campaign and
+  channel that brought the visitor (read from the page's utm_ link).
+-->
+<style>
+  .iddav-enq{--ink:#080F08;--gold:#C9A84C;--cream:#F0E8CC;background:var(--ink);color:var(--cream);
+    padding:32px;border-radius:6px;max-width:560px;font-family:Montserrat,Arial,sans-serif}
+  .iddav-enq h3{font-family:"Cormorant Garamond",Georgia,serif;font-weight:600;font-size:30px;margin:0 0 4px;color:#fff}
+  .iddav-enq .eyebrow{color:var(--gold);font-size:11px;letter-spacing:4px;text-transform:uppercase}
+  .iddav-enq .rule{width:48px;height:2px;background:var(--gold);margin:10px 0 20px}
+  .iddav-enq label{display:block;font-size:11px;letter-spacing:1px;text-transform:uppercase;opacity:.75;margin:12px 0 4px}
+  .iddav-enq input,.iddav-enq textarea{width:100%;box-sizing:border-box;background:transparent;border:1px solid rgba(240,232,204,.3);
+    color:var(--cream);padding:10px;border-radius:4px;font:inherit}
+  .iddav-enq .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .iddav-enq .check{display:flex;gap:8px;align-items:flex-start;font-size:12px;text-transform:none;letter-spacing:0;opacity:.85}
+  .iddav-enq .check input{width:auto;margin-top:2px}
+  .iddav-enq button{margin-top:18px;background:var(--cream);color:var(--ink);border:0;padding:12px 22px;border-radius:4px;
+    font:600 12px Montserrat,Arial,sans-serif;letter-spacing:2px;text-transform:uppercase;cursor:pointer}
+  .iddav-enq .hp{position:absolute;left:-9999px}
+  .iddav-enq .msg{margin-top:14px;font-size:13px}
+</style>
+
+<form class="iddav-enq" id="iddav-enq" novalidate>
+  <div class="eyebrow">Plan a stay</div>
+  <h3>When would you like to come?</h3>
+  <div class="rule"></div>
+
+  <label for="ie-name">Your name</label><input id="ie-name" name="name" required autocomplete="name">
+  <div class="row">
+    <div><label for="ie-phone">WhatsApp / phone</label><input id="ie-phone" name="phone" inputmode="tel" autocomplete="tel"></div>
+    <div><label for="ie-email">Email</label><input id="ie-email" name="email" type="email" autocomplete="email"></div>
+  </div>
+  <div class="row">
+    <div><label for="ie-in">Arriving</label><input id="ie-in" name="checkIn" type="date"></div>
+    <div><label for="ie-out">Leaving</label><input id="ie-out" name="checkOut" type="date"></div>
+  </div>
+  <div class="row">
+    <div><label for="ie-adults">Adults</label><input id="ie-adults" name="adults" type="number" min="1" value="2"></div>
+    <div><label for="ie-rooms">Rooms</label><input id="ie-rooms" name="rooms" type="number" min="1" value="1"></div>
+  </div>
+  <label for="ie-msg">Anything we should know?</label><textarea id="ie-msg" name="message" rows="3"></textarea>
+
+  <input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+  <label class="check"><input type="checkbox" name="consentContact" required> I agree to be contacted about this enquiry.</label>
+  <label class="check"><input type="checkbox" name="consentMarketing"> Send me occasional notes from the forest edge.</label>
+
+  <button type="submit">Send enquiry</button>
+  <div class="msg" id="ie-status" role="status"></div>
+</form>
+
+<script>
+(function () {
+  var WORKER_URL = 'https://imi-backend.YOUR-SUBDOMAIN.workers.dev'; // ← change once
+  var form = document.getElementById('iddav-enq');
+  var status = document.getElementById('ie-status');
+  var params = new URLSearchParams(location.search);
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var f = new FormData(form);
+    if (!f.get('name') || !(f.get('phone') || f.get('email'))) { status.textContent = 'Please add your name and a phone or email.'; return; }
+    if (!f.get('consentContact')) { status.textContent = 'Please tick the box so we can reply.'; return; }
+    var body = {};
+    f.forEach(function (v, k) { body[k] = v; });
+    body.consentContact = true;
+    body.consentMarketing = !!f.get('consentMarketing');
+    ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content'].forEach(function (k) { if (params.get(k)) body[k] = params.get(k); });
+    status.textContent = 'Sending…';
+    fetch(WORKER_URL + '/public/enquiry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) {
+        if (x.ok) { form.reset(); status.textContent = 'Thank you. We will reply within a few hours. Your reference: ' + (x.d.reference || ''); }
+        else { status.textContent = x.d.error || 'Something went wrong. Please WhatsApp us instead.'; }
+      })
+      .catch(function () { status.textContent = 'Could not send. Please WhatsApp us instead.'; });
+  });
+})();
+</script>

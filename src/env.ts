@@ -1,0 +1,32 @@
+export interface Env {
+  DB: D1Database;
+  // Posters, original photos, AI backgrounds and videos. Served read-only at
+  // /media/<key> because Meta, Google, LinkedIn and Telegram fetch by URL.
+  POSTERS: R2Bucket;
+  API_SECRET: string;
+
+  // Owner PIN: typed by hand to connect accounts, approve content and publish
+  // live. Checked server-side only; never part of the frontend build.
+  OWNER_PIN?: string;
+  // 32-byte base64 key that encrypts every stored platform token in D1.
+  CONNECTIONS_KEY?: string;
+  // Where to send the browser after a "Sign in with..." flow finishes.
+  APP_URL?: string;
+
+  // AI providers (server-side only; TFR-AI-001 provider adapter)
+  ANTHROPIC_API_KEY?: string;
+  ANTHROPIC_MODEL?: string; // default claude-sonnet-5-5
+  OPENAI_API_KEY?: string;
+  OPENAI_TEXT_MODEL?: string; // default gpt-4o-mini
+  OPENAI_IMAGE_MODEL?: string; // default gpt-image-2
+  AI_MONTHLY_IMAGE_CAP?: string; // default 60
+  AI_MONTHLY_TEXT_CAP?: string; // default 600
+
+  // OAuth app credentials (one-time developer-app setup per platform)
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  LINKEDIN_CLIENT_ID?: string;
+  LINKEDIN_CLIENT_SECRET?: string;
+  THREADS_APP_ID?: string;
+  THREADS_APP_SECRET?: string;
+}

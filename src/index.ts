@@ -1,26 +1,12 @@
 import { XMLParser } from 'fast-xml-parser';
 
-export interface Env {
-  DB: D1Database;
-  API_SECRET: string;
-  // CHANGE: both optional -- AI Assist works with either, neither, or both
-  // configured, per explicit direction not to force a specific provider.
-  ANTHROPIC_API_KEY?: string;
-  OPENAI_API_KEY?: string;
-}
+import type { Env } from './env';
+import { json, CORS_HEADERS, HttpError, errMsg } from './http';
+import { handleStudioRoutes, serveMedia } from './studio';
+import { handleConnectionRoutes, handleOAuthCallback } from './connections';
+import { handleCrmRoutes, handlePublicEnquiry } from './crm';
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
-};
-
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
-  });
-}
+export type { Env };
 
 function parseJsonField<T>(value: string | null, fallback: T): T {
   if (!value) return fallback;
@@ -151,6 +137,20 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
+    // Public by design: platforms fetch poster images from /media, and OAuth
+    // providers redirect the browser to /oauth/*/callback (one-time state check).
+    if ((request.method === 'GET' || request.method === 'HEAD') && path.startsWith('/media/')) {
+      return serveMedia(env, path.slice('/media/'.length), request);
+    }
+    if (path === '/public/enquiry') {
+      const r = await handlePublicEnquiry(request, env, url);
+      if (r) return r;
+    }
+    if (request.method === 'GET' && path.startsWith('/oauth/')) {
+      const r = await handleOAuthCallback(request, env, url);
+      if (r) return r;
+    }
+
     // CHANGE: shared-secret auth, required before any public deployment.
     // Set via `wrangler secret put API_SECRET` -- never committed to the
     // repo. The frontend sends the same value via VITE_API_KEY, itself set
@@ -162,6 +162,17 @@ export default {
     const providedKey = request.headers.get('X-API-Key');
     if (!env.API_SECRET || providedKey !== env.API_SECRET) {
       return json({ error: 'Unauthorized' }, 401);
+    }
+
+    // Connections + Content Studio
+    try {
+      const r = (await handleConnectionRoutes(request, env, url)) ??
+        (await handleCrmRoutes(request, env, url)) ??
+        (await handleStudioRoutes(request, env, url));
+      if (r) return r;
+    } catch (e) {
+      if (e instanceof HttpError) return json({ error: e.message }, e.status);
+      return json({ error: errMsg(e) }, 500);
     }
 
     // ============================================================
@@ -311,7 +322,7 @@ export default {
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-5',
+            model: env.ANTHROPIC_MODEL || 'claude-sonnet-5-5',
             max_tokens: 500,
             messages: [{ role: 'user', content: prompt }],
           }),
