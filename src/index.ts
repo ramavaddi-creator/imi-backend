@@ -8,6 +8,19 @@ import { handleCrmRoutes, handlePublicEnquiry } from './crm';
 
 export type { Env };
 
+// Feeds often double-encode punctuation (e.g. "world&#8217;s"); turn codes back into characters.
+function decodeEntities(text: string): string {
+  const named: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', hellip: '…', mdash: '—', ndash: '–', rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“' };
+  let out = text;
+  for (let i = 0; i < 2; i++) {
+    out = out
+      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+      .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+      .replace(/&([a-z]+);/gi, (m, n) => named[n.toLowerCase()] ?? m);
+  }
+  return out;
+}
+
 function parseJsonField<T>(value: string | null, fallback: T): T {
   if (!value) return fallback;
   try {
@@ -208,10 +221,10 @@ export default {
           for (const item of itemsArray.slice(0, 10)) {
             if (!item.title || !item.link) continue;
             allItems.push({
-              title: String(item.title),
+              title: decodeEntities(String(item.title)),
               // CHANGE: new -- description captured too, since relevance
               // scoring now checks title + description, not title alone.
-              description: String(item.description || ''),
+              description: decodeEntities(String(item.description || '')),
               link: String(item.link),
               pubDate: String(item.pubDate || ''),
               source: feed.label,
