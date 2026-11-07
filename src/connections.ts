@@ -5,7 +5,8 @@
 // CIL-FR-018 / CILA-FR-192: status, expiry, last check and last error.
 
 import type { Env } from './env';
-import { HttpError, json, now, errMsg, requireOwner } from './http';
+import { HttpError, json, now, errMsg } from './http';
+import { requireOwner, verifiedEmail, isOwner } from './policy';
 import { encryptJson, decryptJson } from './crypto';
 
 export type ConnectionId =
@@ -417,7 +418,8 @@ function callbackPage(env: Env, ok: boolean, message: string): Response {
   return new Response(html, { status: ok ? 200 : 400, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
 }
 
-// Public: the platform redirects the browser here. Protected by the one-time state.
+// The platform redirects the signed-in owner's browser here. Protected by sign-in,
+// the one-time state, and a check that the same person started the flow.
 export async function handleOAuthCallback(request: Request, env: Env, url: URL): Promise<Response | null> {
   const m = url.pathname.match(/^\/oauth\/(google|linkedin|threads)\/callback$/);
   if (!m) return null;
@@ -431,8 +433,14 @@ export async function handleOAuthCallback(request: Request, env: Env, url: URL):
     return callbackPage(env, false, 'This sign-in link expired. Start again from IMI → Connections.');
   }
   if (!code) return callbackPage(env, false, url.searchParams.get('error_description') || 'Sign-in was cancelled.');
+  let saved: { settings?: Record<string, string>; initiatedBy?: string | null } = {};
+  try { saved = JSON.parse(st.settings_json || '{}'); } catch { saved = {}; }
+  const me = verifiedEmail(request);
+  if (!me || !saved.initiatedBy || saved.initiatedBy !== me || !isOwner(env, me)) {
+    return callbackPage(env, false, 'This connection was started by a different signed-in person, or your account cannot connect channels. Start again from IMI → Connections.');
+  }
   try {
-    const conn = await finishOAuth(env, id, url.origin, code, JSON.parse(st.settings_json || '{}'));
+    const conn = await finishOAuth(env, id, url.origin, code, saved.settings || {});
     await saveConn(env, id, conn);
     return callbackPage(env, true, `${def(id).name} is connected${conn.accountLabel ? ` as ${conn.accountLabel}` : ''}.`);
   } catch (e) {
@@ -490,15 +498,17 @@ export async function handleConnectionRoutes(request: Request, env: Env, url: UR
     }
   }
 
-  requireOwner(request, env.OWNER_PIN);
+  requireOwner(request, env);
 
   if (method === 'POST' && action === 'oauth-start') {
     const b = await request.json<any>().catch(() => ({}));
     const settings: Record<string, string> = {};
     for (const f of d.fields) if (typeof b[f.key] === 'string' && b[f.key].trim()) settings[f.key] = b[f.key].trim();
     const state = crypto.randomUUID();
+    // Gate 1: the state remembers which verified person started the connection;
+    // the callback must come from that same person (F-08).
     await env.DB.prepare('INSERT INTO oauth_states (state, platform, settings_json, created_at) VALUES (?, ?, ?, ?)')
-      .bind(state, id, JSON.stringify(settings), now()).run();
+      .bind(state, id, JSON.stringify({ settings, initiatedBy: verifiedEmail(request) }), now()).run();
     return json({ url: authorizeUrl(env, id, url.origin, state, settings) });
   }
 

@@ -12,7 +12,8 @@
 //  - Every test and publish attempt is appended to an audit log (NFR-006).
 
 import type { Env } from './env';
-import { json, HttpError, now, errMsg, requireOwner, actor, sha256Hex, CORS_HEADERS } from './http';
+import { json, HttpError, now, errMsg, actor, sha256Hex, CORS_HEADERS } from './http';
+import { requireOwner } from './policy';
 import { generateCopy, generateAtmosphere, generateCreativeBrief, type CopyProvider, type EvidenceItem } from './ai';
 import { publishTo, CHANNELS, COPY_ONLY, VIDEO_CAPABLE, type Channel } from './publishers';
 import { getConn, CHANNEL_TO_CONNECTION } from './connections';
@@ -496,7 +497,7 @@ export async function handleStudioRoutes(request: Request, env: Env, url: URL): 
 
   // ---- Owner approval (recorded against the exact content)
   if (method === 'POST' && (m = path.match(/^\/api\/contents\/([^/]+)\/approve$/))) {
-    requireOwner(request, env.OWNER_PIN);
+    requireOwner(request, env);
     const { content, pubs } = await loadContent(env, m[1]);
     if (!content.poster_asset_id) throw new HttpError(400, 'Save the poster before approving.');
     const b = await request.json<any>().catch(() => ({}));
@@ -524,10 +525,10 @@ export async function handleStudioRoutes(request: Request, env: Env, url: URL): 
   if (method === 'POST' && (m = path.match(/^\/api\/contents\/([^/]+)\/publish$/))) {
     const b = await request.json<any>().catch(() => ({}));
     const dryRun = b.dryRun !== false;
+    if (!dryRun) requireOwner(request, env); // Gate 1: permission before any lookup
     const { content, pubs } = await loadContent(env, m[1]);
     if (!content.poster_asset_id) throw new HttpError(400, 'Save the poster first.');
     if (!dryRun) {
-      requireOwner(request, env.OWNER_PIN);
       const ap = await currentApproval(env, content, pubs);
       if (!ap) throw new HttpError(403, 'Approve this content before publishing.');
       if (!ap.valid) throw new HttpError(403, 'The content changed after approval. Approve it again.');
@@ -577,7 +578,7 @@ export async function handleStudioRoutes(request: Request, env: Env, url: URL): 
 
   // ---- Manual fallback: you posted it yourself, record where (TFR-REU-008)
   if (method === 'POST' && (m = path.match(/^\/api\/publications\/([^/]+)\/manual$/))) {
-    requireOwner(request, env.OWNER_PIN);
+    requireOwner(request, env);
     const p = await env.DB.prepare('SELECT * FROM publications WHERE id = ?').bind(m[1]).first<any>();
     if (!p) throw new HttpError(404, 'Publication not found.');
     const b = await request.json<any>();

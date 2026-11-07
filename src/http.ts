@@ -1,7 +1,7 @@
 export const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,PATCH,PUT,DELETE,OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, X-Owner-PIN',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Owner-PIN',
 };
 
 export function json(data: unknown, status = 200): Response {
@@ -21,17 +21,21 @@ export const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19)
 export const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Who is acting. With Cloudflare Access in front, this is the signed-in email;
-// otherwise the owner PIN is the proof and we record that honestly.
-export function actor(request: Request, ownerPin?: string): string {
-  const email = request.headers.get('Cf-Access-Authenticated-User-Email');
-  if (email) return email;
-  return ownerPin && request.headers.get('X-Owner-PIN') === ownerPin ? 'Owner (verified by PIN)' : 'IMI user (no PIN)';
+// Who is acting: the identity verified by the request policy (src/policy.ts).
+// Protected routes never run without one, so the fallback appears only on the
+// public enquiry form. Authorization lives in policy.requireOwner, not here.
+export function actor(request: Request, _legacyPin?: string): string {
+  return request.headers.get('X-IMI-Verified-Email') || 'Unverified caller';
 }
 
-export function requireOwner(request: Request, pin: string | undefined) {
-  if (!pin) throw new HttpError(403, 'OWNER_PIN is not set on the Worker, so this action is disabled.');
-  if (request.headers.get('X-Owner-PIN') !== pin) throw new HttpError(403, 'Incorrect owner PIN.');
+// Constant-time string comparison for secrets such as the owner PIN.
+export function safeEqual(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(a);
+  const y = new TextEncoder().encode(b);
+  let diff = x.length ^ y.length;
+  const n = Math.max(x.length, y.length);
+  for (let i = 0; i < n; i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
+  return diff === 0;
 }
 
 export async function sha256Hex(data: ArrayBuffer | string): Promise<string> {

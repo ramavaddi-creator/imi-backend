@@ -1,7 +1,8 @@
 import { XMLParser } from 'fast-xml-parser';
 
 import type { Env } from './env';
-import { json, CORS_HEADERS, HttpError, errMsg } from './http';
+import { json, CORS_HEADERS, HttpError, errMsg, actor } from './http';
+import { gate, applyCors, requireOwner, verifiedEmail, isOwner } from './policy';
 import { handleStudioRoutes, serveMedia } from './studio';
 import { handleConnectionRoutes, handleOAuthCallback } from './connections';
 import { handleCrmRoutes, handlePublicEnquiry } from './crm';
@@ -141,8 +142,7 @@ async function nextCode(env: Env, table: string, prefix: string): Promise<string
   return `${prefix}-${String(seq).padStart(4, '0')}`;
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+async function route(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -164,17 +164,11 @@ export default {
       if (r) return r;
     }
 
-    // CHANGE: shared-secret auth, required before any public deployment.
-    // Set via `wrangler secret put API_SECRET` -- never committed to the
-    // repo. The frontend sends the same value via VITE_API_KEY, itself set
-    // in .env.production, not committed either. This is a minimal gate
-    // appropriate for a single-tenant internal tool, not a full user-auth
-    // system -- it stops casual/automated discovery of the URL from reading
-    // or writing data, which is what an unauthenticated public Worker
-    // cannot prevent at all.
-    const providedKey = request.headers.get('X-API-Key');
-    if (!env.API_SECRET || providedKey !== env.API_SECRET) {
-      return json({ error: 'Unauthorized' }, 401);
+    // Gate 1: the shared X-API-Key check is retired. Every non-public request
+    // has already passed gate() with a verified Cloudflare Access identity.
+    if (request.method === 'GET' && path === '/api/whoami') {
+      const email = verifiedEmail(request);
+      return json({ email, owner: isOwner(env, email) });
     }
 
     // Connections + Content Studio
@@ -505,8 +499,10 @@ export default {
       )
         .bind(
           id, code, 'iddav-marketing-intelligence', body.title, body.problemStatement, body.associatedRecordCode,
-          body.approvalClass, body.approvalStatus ?? 'pending', body.approverRequired, body.approvedBy ?? null,
-          body.approvedAt ?? null, body.retrospective, JSON.stringify(body.optionsConsidered), body.selectedOption,
+          // Gate 1: new decisions always start pending; approval is a separate,
+          // owner-checked step whose approver the server records (F-17).
+          body.approvalClass, 'pending', body.approverRequired, null,
+          null, body.retrospective, JSON.stringify(body.optionsConsidered), body.selectedOption,
           body.rationale, body.confidence?.level, body.confidence?.reason,
           body.actionsDeliberatelyAvoided ? JSON.stringify(body.actionsDeliberatelyAvoided) : null,
           body.risks ? JSON.stringify(body.risks) : null, body.schemaFitNote ?? null,
@@ -520,17 +516,49 @@ export default {
 
     const decisionPatchMatch = path.match(/^\/api\/decisions\/([^/]+)$/);
     if (request.method === 'PATCH' && decisionPatchMatch) {
+      // Gate 1 (F-17): changing an approval needs a verified person with owner
+      // permission. The server records who and when; nothing in the request body
+      // is treated as an identity. Each change is written to the append-only
+      // decision_events table in the same transaction, and a repeated or
+      // concurrent change to the same status is refused, not double-recorded.
       const id = decisionPatchMatch[1];
-      const body = await request.json<any>();
-      if (!body.approvalStatus) return json({ error: 'approvalStatus is required' }, 400);
-      await env.DB.prepare(
-        'UPDATE decision_items SET approval_status = ?, approved_by = ?, approved_at = ? WHERE id = ?'
-      )
-        .bind(body.approvalStatus, body.approvedBy ?? null, body.approvedAt ?? null, id)
-        .run();
+      const body = await request.json<any>().catch(() => ({}));
+      const to = body?.approvalStatus;
+      if (!['approved', 'pending', 'rejected'].includes(to)) {
+        return json({ error: 'approvalStatus must be approved, pending or rejected' }, 400);
+      }
+      let who: string;
+      try {
+        who = requireOwner(request, env);
+      } catch (e) {
+        if (e instanceof HttpError) return json({ error: e.message }, e.status);
+        throw e;
+      }
+      const existing = await env.DB.prepare('SELECT approval_status FROM decision_items WHERE id = ?').bind(id).first<{ approval_status: string }>();
+      if (!existing) return json({ error: 'not found' }, 404);
+      const at = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) || null : null;
+      const approved = to === 'approved';
+      const results = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO decision_events (id, decision_id, from_status, to_status, actor, note, created_at)
+           SELECT ?, id, approval_status, ?, ?, ?, ? FROM decision_items WHERE id = ? AND approval_status <> ?`
+        ).bind(crypto.randomUUID(), to, who, note, at, id, to),
+        env.DB.prepare(
+          'UPDATE decision_items SET approval_status = ?, approved_by = ?, approved_at = ? WHERE id = ? AND approval_status <> ?'
+        ).bind(to, approved ? who : null, approved ? at.slice(0, 10) : null, id, to),
+      ]);
+      if ((results[1] as any)?.meta?.changes !== 1) {
+        return json({ error: `This decision is already ${to}.` }, 409);
+      }
       const row = await env.DB.prepare('SELECT * FROM decision_items WHERE id = ?').bind(id).first();
-      if (!row) return json({ error: 'not found' }, 404);
       return json(rowToDecision(row));
+    }
+
+    const decisionEventsMatch = path.match(/^\/api\/decisions\/([^/]+)\/events$/);
+    if (request.method === 'GET' && decisionEventsMatch) {
+      const { results } = await env.DB.prepare('SELECT from_status, to_status, actor, note, created_at FROM decision_events WHERE decision_id = ? ORDER BY created_at').bind(decisionEventsMatch[1]).all();
+      return json(results || []);
     }
 
     // ============================================================
@@ -569,5 +597,21 @@ export default {
     }
 
     return json({ error: 'not found' }, 404);
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    // Gate 1: gate() classifies the route (exact public rules, everything else
+    // protected), verifies identity and fails closed; applyCors() sets CORS
+    // per route class and adds security headers to every response.
+    const g = await gate(request, env);
+    if ('stop' in g) return applyCors(g.stop, request, env, g.cls);
+    let res: Response;
+    try {
+      res = await route(g.request, env);
+    } catch (e) {
+      res = e instanceof HttpError ? json({ error: e.message }, e.status) : json({ error: 'Something went wrong. Please try again.' }, 500);
+    }
+    return applyCors(res, request, env, g.cls);
   },
 };

@@ -3,7 +3,8 @@ export interface Env {
   // Posters, original photos, AI backgrounds and videos. Served read-only at
   // /media/<key> because Meta, Google, LinkedIn and Telegram fetch by URL.
   POSTERS: R2Bucket;
-  API_SECRET: string;
+  // Retired by Gate 1: no longer checked. Kept so old deployments type-check.
+  API_SECRET?: string;
 
   // Owner PIN: typed by hand to connect accounts, approve content and publish
   // live. Checked server-side only; never part of the frontend build.
@@ -12,6 +13,21 @@ export interface Env {
   CONNECTIONS_KEY?: string;
   // Where to send the browser after a "Sign in with..." flow finishes.
   APP_URL?: string;
+  // ---- Gate 1 sign-in and permissions (src/policy.ts) ----
+  // Cloudflare Access application. Both required: without valid values every
+  // private request is refused with 503 (fail closed).
+  ACCESS_TEAM_DOMAIN?: string; // e.g. iddav.cloudflareaccess.com
+  ACCESS_AUD?: string; // Access application Audience (AUD) tag
+  // Comma-separated emails with owner permission (approve, publish, connect).
+  OWNER_EMAILS?: string;
+  // Comma-separated browser origins for the app (default APP_URL) and for
+  // brand websites that host the enquiry form. Unlisted origins are refused.
+  ALLOWED_ORIGINS?: string;
+  ENQUIRY_ORIGINS?: string;
+  // Local development only, set in .dev.vars (never deployed). Honoured only
+  // on localhost URLs.
+  ENVIRONMENT?: string;
+  DEV_IDENTITY?: string;
 
   // The Iddav CRM: the one place enquiries, quotes and bookings live (DEC-IMI-003). IMI reads campaign results from it.
   // CRM_SERVICE_KEY must equal INTAKE_KEY on the CRM Worker. Set it with `wrangler secret put CRM_SERVICE_KEY`.

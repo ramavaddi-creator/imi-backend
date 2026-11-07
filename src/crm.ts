@@ -10,7 +10,8 @@
 //  - Personal data stays in the CRM: never sent to AI, deletable on request.
 
 import type { Env } from './env';
-import { json, HttpError, now, requireOwner, actor, sha256Hex, CORS_HEADERS } from './http';
+import { json, HttpError, now, actor, sha256Hex, CORS_HEADERS } from './http';
+import { requireOwner } from './policy';
 import { crmMode, crmReadOnlyMessage, fetchCrmCampaign, crmTotals } from './crm_bridge';
 
 export const STAGES = ['new', 'contacted', 'qualified', 'quoted', 'tentative', 'booked', 'stayed', 'lost', 'cancelled', 'nurture'];
@@ -308,7 +309,7 @@ export async function handleCrmRoutes(request: Request, env: Env, url: URL): Pro
 
   // Right to erasure: remove personal data, keep anonymous economics for learning (FR-CRM-010).
   if (method === 'POST' && (m = path.match(/^\/api\/enquiries\/([^/]+)\/forget$/))) {
-    requireOwner(request, env.OWNER_PIN);
+    requireOwner(request, env);
     const r = await getOne(env, m[1]);
     await env.DB.prepare(
       `UPDATE enquiries SET name = NULL, phone = NULL, email = NULL, first_message = NULL, budget_note = NULL, interests = NULL,
@@ -326,7 +327,7 @@ export async function handleCrmRoutes(request: Request, env: Env, url: URL): Pro
 
   // Close the loop: CRM truth becomes an IMI Outcome record. Learning stays human.
   if (method === 'POST' && (m = path.match(/^\/api\/campaigns\/([^/]+)\/outcome$/))) {
-    requireOwner(request, env.OWNER_PIN);
+    requireOwner(request, env);
     const b = await request.json<any>();
     const learning = clean(b.learning, 2000);
     if (!learning) throw new HttpError(400, 'Write what you learned. IMI records the numbers; the lesson is yours.');

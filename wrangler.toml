@@ -2,6 +2,11 @@ name = "imi-backend"
 main = "src/index.ts"
 compatibility_date = "2026-07-17"
 
+# Gate 1 (proposed, not active): once the app is served from one Access-protected
+# custom domain, switch off the extra hostnames Access does not cover:
+# workers_dev = false
+# preview_urls = false
+
 [[d1_databases]]
 binding = "DB"
 database_name = "imi-db"
