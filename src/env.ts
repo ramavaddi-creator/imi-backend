@@ -13,6 +13,11 @@ export interface Env {
   // Where to send the browser after a "Sign in with..." flow finishes.
   APP_URL?: string;
 
+  // The Iddav CRM: the one place enquiries, quotes and bookings live (DEC-IMI-003). IMI reads campaign results from it.
+  // CRM_SERVICE_KEY must equal INTAKE_KEY on the CRM Worker. Set it with `wrangler secret put CRM_SERVICE_KEY`.
+  CRM_URL?: string;
+  CRM_SERVICE_KEY?: string;
+
   // AI providers (server-side only; TFR-AI-001 provider adapter)
   ANTHROPIC_API_KEY?: string;
   ANTHROPIC_MODEL?: string; // default claude-sonnet-5-5

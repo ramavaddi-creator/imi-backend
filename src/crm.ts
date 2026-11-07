@@ -11,6 +11,7 @@
 
 import type { Env } from './env';
 import { json, HttpError, now, requireOwner, actor, sha256Hex, CORS_HEADERS } from './http';
+import { crmMode, crmReadOnlyMessage, fetchCrmCampaign, crmTotals } from './crm_bridge';
 
 export const STAGES = ['new', 'contacted', 'qualified', 'quoted', 'tentative', 'booked', 'stayed', 'lost', 'cancelled', 'nurture'];
 const OPEN = new Set(['new', 'contacted', 'qualified', 'quoted', 'tentative']);
@@ -134,6 +135,8 @@ async function create(env: Env, b: any, who: string, publicForm = false) {
 
 export async function handlePublicEnquiry(request: Request, env: Env, url: URL): Promise<Response | null> {
   if (url.pathname !== '/public/enquiry') return null;
+  // the website now sends enquiries to the CRM; a form still pointing here is told so instead of creating a second copy
+  if (crmMode(env)) return json({ error: 'Enquiries are taken by the Iddav CRM now. Please use the enquiry form on iddavwildstay.com or WhatsApp us.' }, 410);
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405, headers: CORS_HEADERS });
   const ct = request.headers.get('Content-Type') || '';
   const b: any = ct.includes('application/json') ? await request.json().catch(() => ({})) : Object.fromEntries((await request.formData()).entries());
@@ -163,6 +166,12 @@ export async function handleCrmRoutes(request: Request, env: Env, url: URL): Pro
   const method = request.method;
   let m: RegExpMatchArray | null;
   const who = () => actor(request, env.OWNER_PIN);
+
+  // Where enquiries live. In CRM mode IMI shows the old records read-only and takes no new ones: there is one copy, in the CRM.
+  if (method === 'GET' && path === '/api/crm/status') return json({ mode: crmMode(env) ? 'crm' : 'local', crmUrl: crmMode(env) ? env.CRM_URL : null });
+  if (crmMode(env) && ((method === 'POST' && path === '/api/enquiries') || (method === 'PATCH' && /^\/api\/enquiries\/[^/]+$/.test(path)) || (method === 'POST' && /^\/api\/enquiries\/[^/]+\/(stage|notes)$/.test(path)))) {
+    throw new HttpError(409, crmReadOnlyMessage(env));
+  }
 
   if (method === 'GET' && path === '/api/crm/options') {
     const { results } = await env.DB.prepare('SELECT id, code, name FROM campaigns ORDER BY created_at DESC').all();
@@ -376,6 +385,16 @@ async function funnel(env: Env, campaignId: string) {
   const start = first?.start ? String(first.start).slice(0, 10) : null;
   const end = start ? new Date(Date.parse(`${start}T00:00:00Z`) + c.outcome_window_days * 86400_000).toISOString().slice(0, 10) : null;
 
+  // One copy of the truth: when the CRM is connected, the campaign's results come from it, not from this table.
+  if (crmMode(env)) {
+    const crm = crmTotals(await fetchCrmCampaign(env, c.code, start ? `${start}T00:00:00Z` : null), ABBR_TO_CHANNEL);
+    return {
+      campaign: { id: c.id, code: c.code, expectedOutcome: c.expected_outcome, primaryMetric: c.primary_metric, windowDays: c.outcome_window_days },
+      window: { start, end, closed: end ? now().slice(0, 10) >= end : false },
+      published: first?.n || 0, totals: crm.totals, byChannel: crm.byChannel, topLossReason: crm.topLossReason, source: 'crm' as const,
+    };
+  }
+
   const reached = (r: any, s: string[]) => s.includes(r.stage) || (s.includes('quoted') && r.quote_amount) || (s.includes('booked') && r.booked_value);
   const won = rows.filter((r) => ['booked', 'stayed'].includes(r.stage));
   const lost = rows.filter((r) => ['lost', 'cancelled'].includes(r.stage));
@@ -411,5 +430,6 @@ async function funnel(env: Env, campaignId: string) {
     },
     byChannel,
     topLossReason,
+    source: 'local' as const,
   };
 }

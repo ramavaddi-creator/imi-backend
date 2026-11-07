@@ -107,3 +107,22 @@ ad enquiries are counted.
 - Tokens are encrypted in D1 with CONNECTIONS_KEY. If you lose that key, just
   reconnect each platform.
 - See `docs/decisions/DEC-IMI-002.md` for what this pilot is and is not.
+
+## Connect IMI to the Iddav CRM (DEC-IMI-003)
+
+The CRM keeps enquiries, quotes and bookings. IMI reads each campaign's results from it. Do this once, after the CRM is deployed.
+
+1. Choose one long random value, for example `openssl rand -base64 32`. It is the **service key**.
+2. On the **CRM** Worker (the `iddav-crm` project): `wrangler secret put INTAKE_KEY` and paste the key. (If you already set one, reuse it.)
+3. On **this** Worker: `wrangler secret put CRM_SERVICE_KEY` and paste the same key.
+4. `CRM_URL` is already in `wrangler.toml`. Change it if the CRM address changes. Then `npm run deploy`.
+5. Check it: in IMI open Enquiries (a banner says enquiries now live in the CRM) and open a campaign in Content Studio. The results header reads
+   **Results from the Iddav CRM**.
+
+Until both `CRM_URL` and `CRM_SERVICE_KEY` are set, IMI works as before, with its own enquiries. The key must never be put in the repository or in
+the frontend build. If the CRM rejects the key, IMI says so in plain words.
+
+Campaign codes: the CRM groups enquiries by the IMI campaign code in the link or message the guest arrived with (`REF CMP-0003-2-IG`). Keep using
+the tracked links IMI issues, so every enquiry is tied to its campaign.
+
+Tests: `npm test`. Type-check: `npm run typecheck`.
