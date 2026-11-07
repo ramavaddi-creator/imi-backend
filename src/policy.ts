@@ -27,13 +27,13 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const list = (v?: string) => (v || '').split(',').map((s) => s.trim()).filter(Boolean);
 
 // Strips client identity headers; adds IDENTITY_HEADER only after verification.
-// Local development: with ENVIRONMENT="development" in .dev.vars (never
-// deployed) and a localhost URL, DEV_IDENTITY stands in for Access.
-export async function identify(request: Request, env: Env, fetchImpl: typeof fetch = fetch): Promise<{ request: Request; email: string | null }> {
+// devIdentity is passed only by the local entry point src/dev.ts (see
+// createWorker in index.ts); configuration cannot set it.
+export async function identify(request: Request, env: Env, fetchImpl: typeof fetch = fetch, devIdentity?: string): Promise<{ request: Request; email: string | null }> {
   const url = new URL(request.url);
   let email: string | null = null;
-  if (env.ENVIRONMENT === 'development' && LOCAL_HOSTS.has(url.hostname) && env.DEV_IDENTITY) {
-    email = env.DEV_IDENTITY.trim().toLowerCase();
+  if (devIdentity && LOCAL_HOSTS.has(url.hostname)) {
+    email = devIdentity.trim().toLowerCase();
   } else {
     email = await verifyAccessJwt(request.headers.get('Cf-Access-Jwt-Assertion'), { teamDomain: env.ACCESS_TEAM_DOMAIN, aud: env.ACCESS_AUD }, fetchImpl);
   }
@@ -94,14 +94,14 @@ export function applyCors(res: Response, request: Request, env: Env, cls: RouteC
 
 // The single entry point. Returns a response to send, or the identified
 // request for the router.
-export async function gate(request: Request, env: Env, fetchImpl: typeof fetch = fetch):
+export async function gate(request: Request, env: Env, fetchImpl: typeof fetch = fetch, devIdentity?: string):
   Promise<{ stop: Response; cls: RouteClass } | { request: Request; cls: RouteClass }> {
   const url = new URL(request.url);
   const cls = classify(request.method, url.pathname);
   if (request.method === 'OPTIONS') return { stop: new Response(null, { status: 204 }), cls };
-  const { request: req, email } = await identify(request, env, fetchImpl);
+  const { request: req, email } = await identify(request, env, fetchImpl, devIdentity);
   if (cls !== 'protected') return { request: req, cls };
-  const devMode = env.ENVIRONMENT === 'development' && LOCAL_HOSTS.has(url.hostname) && !!env.DEV_IDENTITY;
+  const devMode = !!devIdentity && LOCAL_HOSTS.has(url.hostname);
   if (!devMode && !accessConfigValid({ teamDomain: env.ACCESS_TEAM_DOMAIN, aud: env.ACCESS_AUD })) {
     return { stop: json({ error: 'Sign-in is not configured on this server, so private actions are switched off.' }, 503), cls };
   }

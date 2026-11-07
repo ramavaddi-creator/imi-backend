@@ -1,0 +1,17 @@
+# LOCAL DEVELOPMENT ONLY. Never deploy with this file.
+# npm run dev:local  ->  wrangler dev -c wrangler.dev.toml --local
+name = "imi-backend-local"
+main = "src/dev.ts"
+compatibility_date = "2026-07-17"
+workers_dev = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "imi-db-local"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[r2_buckets]]
+binding = "POSTERS"
+bucket_name = "imi-posters-local"
+
+# Put DEV_IDENTITY_LOCAL and OWNER_EMAILS in .dev.vars (git-ignored).

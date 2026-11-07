@@ -24,10 +24,9 @@ export interface Env {
   // brand websites that host the enquiry form. Unlisted origins are refused.
   ALLOWED_ORIGINS?: string;
   ENQUIRY_ORIGINS?: string;
-  // Local development only, set in .dev.vars (never deployed). Honoured only
-  // on localhost URLs.
-  ENVIRONMENT?: string;
-  DEV_IDENTITY?: string;
+  // Live publishing switch and emergency stop. Anything other than "true"
+  // blocks real posts (tests/dry runs still work). Staging never sets it.
+  PUBLISHING_ENABLED?: string;
 
   // The Iddav CRM: the one place enquiries, quotes and bookings live (DEC-IMI-003). IMI reads campaign results from it.
   // CRM_SERVICE_KEY must equal INTAKE_KEY on the CRM Worker. Set it with `wrangler secret put CRM_SERVICE_KEY`.

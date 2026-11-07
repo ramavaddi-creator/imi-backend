@@ -153,7 +153,11 @@ async function route(request: Request, env: Env): Promise<Response> {
     // Public by design: platforms fetch poster images from /media, and OAuth
     // providers redirect the browser to /oauth/*/callback (one-time state check).
     if ((request.method === 'GET' || request.method === 'HEAD') && path.startsWith('/media/')) {
-      return serveMedia(env, path.slice('/media/'.length), request);
+      return serveMedia(env, path.slice('/media/'.length), request, 'public');
+    }
+    // Signed-in previews of any file, including drafts (gate() already required sign-in).
+    if ((request.method === 'GET' || request.method === 'HEAD') && path.startsWith('/api/media/')) {
+      return serveMedia(env, path.slice('/api/media/'.length), request, 'signed-in');
     }
     if (path === '/public/enquiry') {
       const r = await handlePublicEnquiry(request, env, url);
@@ -599,19 +603,27 @@ async function route(request: Request, env: Env): Promise<Response> {
     return json({ error: 'not found' }, 404);
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    // Gate 1: gate() classifies the route (exact public rules, everything else
-    // protected), verifies identity and fails closed; applyCors() sets CORS
-    // per route class and adds security headers to every response.
-    const g = await gate(request, env);
-    if ('stop' in g) return applyCors(g.stop, request, env, g.cls);
-    let res: Response;
-    try {
-      res = await route(g.request, env);
-    } catch (e) {
-      res = e instanceof HttpError ? json({ error: e.message }, e.status) : json({ error: 'Something went wrong. Please try again.' }, 500);
-    }
-    return applyCors(res, request, env, g.cls);
-  },
-};
+// Gate 1 (check 1): a local-development identity can only be supplied in code,
+// by src/dev.ts, which is a separate entry point never deployed (wrangler.toml
+// main = src/index.ts). No environment variable can switch it on here, and a
+// CI check proves the deployed bundle does not contain src/dev.ts.
+export function createWorker(opts: { devIdentity?: string } = {}) {
+  return {
+    async fetch(request: Request, env: Env): Promise<Response> {
+      // gate() classifies the route (exact public rules, everything else
+      // protected), verifies identity and fails closed; applyCors() sets CORS
+      // per route class and adds security headers to every response.
+      const g = await gate(request, env, fetch, opts.devIdentity);
+      if ('stop' in g) return applyCors(g.stop, request, env, g.cls);
+      let res: Response;
+      try {
+        res = await route(g.request, env);
+      } catch (e) {
+        res = e instanceof HttpError ? json({ error: e.message }, e.status) : json({ error: 'Something went wrong. Please try again.' }, 500);
+      }
+      return applyCors(res, request, env, g.cls);
+    },
+  };
+}
+
+export default createWorker();

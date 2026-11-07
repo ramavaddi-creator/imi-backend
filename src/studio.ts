@@ -120,7 +120,7 @@ async function loadContent(env: Env, id: string) {
   return { content, campaign, pubs: results || [] };
 }
 
-async function contentHash(content: any, pubs: any[]): Promise<string> {
+export async function contentHash(content: any, pubs: any[]): Promise<string> {
   return sha256Hex(JSON.stringify({
     eyebrow: content.eyebrow, headline: content.headline, poster: content.poster_asset_id, video: content.video_asset_id,
     background: content.background_asset_id, mode: content.media_mode, tool: content.ai_media_tool,
@@ -250,15 +250,39 @@ async function refreshStatus(env: Env, contentId: string) {
 
 // ---------------------------------------------------------------- Media
 
-export async function serveMedia(env: Env, key: string, request?: Request): Promise<Response> {
+// Gate 1 (check 2): a file is public only when the content it belongs to is
+// actually published, or carries a current, valid approval (platforms such as
+// Meta fetch the image during the publish call, before the status changes).
+// Drafts, uploaded originals, backgrounds and anything after a revoked or
+// outdated approval stay private. The URL pattern alone proves nothing.
+export async function isPublicMedia(env: Env, key: string): Promise<boolean> {
+  const asset = await env.DB.prepare('SELECT id FROM assets WHERE r2_key = ?').bind(key).first<{ id: string }>();
+  if (!asset) return false;
+  const { results } = await env.DB.prepare('SELECT * FROM contents WHERE poster_asset_id = ? OR video_asset_id = ?').bind(asset.id, asset.id).all<any>();
+  for (const content of results || []) {
+    const pubs = (await env.DB.prepare('SELECT * FROM publications WHERE content_id = ?').bind(content.id).all<any>()).results || [];
+    if (pubs.some((p: any) => p.status === 'published')) return true;
+    const ap = await currentApproval(env, content, pubs);
+    if (ap?.valid) return true;
+  }
+  return false;
+}
+
+// visibility 'public': /media/<key>, open to platforms, only for public media.
+// visibility 'signed-in': /api/media/<key>, behind sign-in, for in-app previews.
+export async function serveMedia(env: Env, key: string, request?: Request, visibility: 'public' | 'signed-in' = 'public'): Promise<Response> {
   if (!key || key.includes('..')) return new Response('Not found', { status: 404, headers: CORS_HEADERS });
+  if (visibility === 'public' && !(await isPublicMedia(env, key))) {
+    return new Response('Not found', { status: 404, headers: { 'Cache-Control': 'no-store' } }); // same answer as missing: reveals nothing
+  }
   // Range support lets video players and Meta's fetcher stream videos.
   const range = request?.headers.get('Range') ? request.headers : undefined;
   const obj = await env.POSTERS.get(key, range ? { range } : undefined);
   if (!obj) return new Response('Not found', { status: 404, headers: CORS_HEADERS });
   const headers: Record<string, string> = {
     'Content-Type': obj.httpMetadata?.contentType || 'application/octet-stream',
-    'Cache-Control': 'public, max-age=31536000, immutable', 'Accept-Ranges': 'bytes', ...CORS_HEADERS,
+    // Short public cache so a withdrawn approval stops serving within an hour.
+    'Cache-Control': visibility === 'public' ? 'public, max-age=3600' : 'private, no-store', 'Accept-Ranges': 'bytes', ...CORS_HEADERS,
   };
   const r = (obj as R2ObjectBody).range as { offset?: number; length?: number } | undefined;
   if (range && r && r.offset !== undefined && r.length !== undefined) {
@@ -525,7 +549,12 @@ export async function handleStudioRoutes(request: Request, env: Env, url: URL): 
   if (method === 'POST' && (m = path.match(/^\/api\/contents\/([^/]+)\/publish$/))) {
     const b = await request.json<any>().catch(() => ({}));
     const dryRun = b.dryRun !== false;
-    if (!dryRun) requireOwner(request, env); // Gate 1: permission before any lookup
+    if (!dryRun) {
+      requireOwner(request, env); // Gate 1: permission before any lookup
+      // Live publishing is off unless this environment explicitly enables it
+      // (staging never does). Also the emergency stop for all live posting.
+      if (env.PUBLISHING_ENABLED !== 'true') throw new HttpError(403, 'Live publishing is switched off in this environment. Tests still work.');
+    }
     const { content, pubs } = await loadContent(env, m[1]);
     if (!content.poster_asset_id) throw new HttpError(400, 'Save the poster first.');
     if (!dryRun) {

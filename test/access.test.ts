@@ -3,7 +3,8 @@ import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyAccessJwt, resetJwksCache, accessConfigValid, IDENTITY_HEADER } from '../src/access.ts';
 import { classify } from '../src/policy.ts';
-import worker from '../src/index.ts';
+import worker, { createWorker } from '../src/index.ts';
+import { contentHash } from '../src/studio.ts';
 import { makeD1 } from './helpers/d1.ts';
 
 const TEAM = 'iddav.cloudflareaccess.com';
@@ -127,10 +128,14 @@ test('signing keys are cached between requests', async () => {
 // ------------------------------------------------------------ Worker
 
 type R2 = { get: (k: string) => Promise<any> };
+const FILES = new Map<string, string>();
+const r2: R2 = {
+  get: async (k: string) => (FILES.has(k) ? { body: new Blob([FILES.get(k)!]).stream(), size: FILES.get(k)!.length, httpMetadata: { contentType: 'image/jpeg' } } : null),
+};
 function env(over: Record<string, unknown> = {}) {
   return {
     DB: makeD1(),
-    POSTERS: { get: async () => null } as R2,
+    POSTERS: r2,
     ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD,
     OWNER_EMAILS: `${OWNER}, other-owner@iddav.com`, OWNER_PIN: '4321',
     APP_URL: APP, ENQUIRY_ORIGINS: 'https://iddavwildstay.com',
@@ -339,12 +344,20 @@ test('OAuth: the same owner passes the binding check (then reaches the provider)
   assert.doesNotMatch(text, /different signed-in person/);
 });
 
-test('local development identity works only on localhost', async () => {
-  const dev = { ENVIRONMENT: 'development', DEV_IDENTITY: OWNER, ACCESS_TEAM_DOMAIN: undefined, ACCESS_AUD: undefined };
-  const local = await call(env(dev), 'GET', '/api/whoami', { host: 'http://localhost:8787' });
+test('SEC (check 1): the deployed worker ignores any development identity in configuration, even on localhost', async () => {
+  const e = env({ ENVIRONMENT: 'development', DEV_IDENTITY: OWNER, DEV_IDENTITY_LOCAL: OWNER, ACCESS_TEAM_DOMAIN: undefined, ACCESS_AUD: undefined });
+  for (const host of ['http://localhost:8787', 'http://127.0.0.1:8787', ...HOSTS]) {
+    assert.equal((await call(e, 'GET', '/api/whoami', { host })).status, 503, host);
+  }
+});
+
+test('the local-development identity works only through the code entry point and only on localhost', async () => {
+  const dev = createWorker({ devIdentity: OWNER });
+  const e = env({ ACCESS_TEAM_DOMAIN: undefined, ACCESS_AUD: undefined });
+  const local = await dev.fetch(new Request('http://localhost:8787/api/whoami'), e);
   assert.deepEqual(await local.json(), { email: OWNER, owner: true });
   for (const host of HOSTS) {
-    assert.equal((await call(env(dev), 'GET', '/api/whoami', { host })).status, 503, host);
+    assert.equal((await dev.fetch(new Request(`${host}/api/whoami`), e)).status, 503, host);
   }
 });
 
@@ -367,4 +380,84 @@ test('CRM outcomes bridge still works for a signed-in user, and the CRM stays th
   assert.ok(seen!.url.startsWith('https://crm.example/integrations/imi/outcomes?campaign=CMP-0003'));
   assert.equal(seen!.key, 'key-123');
   assert.equal(seen!.jwt, null); // the user's sign-in token is never forwarded to the CRM
+});
+
+// ------------------------------------------------------------ Check 2: media publication status
+
+const KEY = (n: number) => `posters/0b2f8c1e-1d2a-4c3b-9e8f-7a6b5c4d3e${String(n).padStart(2, '0')}.jpg`;
+function mediaFixture(e: any, n: number, opts: { published?: boolean; approval?: 'valid' | 'revoked' | 'stale' } = {}) {
+  const db = e.DB.raw;
+  const key = KEY(n);
+  FILES.set(key, 'jpegbytes');
+  db.prepare(`INSERT OR IGNORE INTO campaigns (id, code, name, objective, primary_metric, audience_json, cta_type, destination_url, expected_outcome, outcome_window_days, status, created_by, created_at)
+    VALUES ('camp', 'CMP-0001', 'C', 'awareness', 'enquiries', '[]', 'whatsapp', 'https://wa.me/1', 'x', 14, 'active', 't', '2026-11-01 00:00:00')`).run();
+  db.prepare(`INSERT INTO assets (id, r2_key, kind, content_type, authenticity, created_at) VALUES (?, ?, 'poster', 'image/jpeg', 'original', '2026-11-01')`).run(`a${n}`, key);
+  db.prepare(`INSERT INTO contents (id, campaign_id, series_number, template, headline, background_authenticity, poster_asset_id, status, created_by, created_at, updated_at)
+    VALUES (?, 'camp', ?, 'bottom', 'H', 'original', ?, 'draft', 't', '2026-11-01', '2026-11-01')`).run(`k${n}`, n, `a${n}`);
+  db.prepare(`INSERT INTO publications (id, content_id, channel, caption, tracked_url, status, created_at, updated_at) VALUES (?, ?, 'instagram', 'cap', 'https://x.example', ?, '2026-11-01', '2026-11-01')`).run(`p${n}`, `k${n}`, opts.published ? 'published' : 'draft');
+  return key;
+}
+async function approve(e: any, n: number, mode: 'valid' | 'revoked' | 'stale') {
+  const db = e.DB.raw;
+  const content = db.prepare('SELECT * FROM contents WHERE id = ?').get(`k${n}`);
+  const pubs = db.prepare('SELECT * FROM publications WHERE content_id = ?').all(`k${n}`);
+  const hash = mode === 'stale' ? 'outdated-hash' : await contentHash(content, pubs);
+  db.prepare(`INSERT INTO approvals (id, content_id, approval_class, approved_by, content_hash, approved_at, revoked_at) VALUES (?, ?, 'A', ?, ?, '2026-11-02', ?)`)
+    .run(`ap${n}`, `k${n}`, OWNER, hash, mode === 'revoked' ? '2026-11-03' : null);
+}
+
+test('SEC (check 2): a draft file is not public, even with a valid-looking media URL', async () => {
+  const e = env();
+  const key = mediaFixture(e, 1);
+  const res = await call(e, 'GET', `/media/${key}`);
+  assert.equal(res.status, 404);
+  assert.equal(res.headers.get('Cache-Control'), 'no-store');
+});
+
+test('a published file is public, with a short public cache', async () => {
+  const e = env();
+  const key = mediaFixture(e, 2, { published: true });
+  const res = await call(e, 'GET', `/media/${key}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('Cache-Control'), 'public, max-age=3600');
+});
+
+test('a file with a current valid approval is public (platforms fetch it during publishing)', async () => {
+  const e = env();
+  const key = mediaFixture(e, 3);
+  await approve(e, 3, 'valid');
+  assert.equal((await call(e, 'GET', `/media/${key}`)).status, 200);
+});
+
+test('SEC (check 2): a revoked or outdated approval does not make a file public', async () => {
+  const e = env();
+  const k4 = mediaFixture(e, 4); await approve(e, 4, 'revoked');
+  const k5 = mediaFixture(e, 5); await approve(e, 5, 'stale');
+  assert.equal((await call(e, 'GET', `/media/${k4}`)).status, 404);
+  assert.equal((await call(e, 'GET', `/media/${k5}`)).status, 404);
+});
+
+test('SEC (check 2): an uploaded file not attached to any content is never public', async () => {
+  const e = env();
+  FILES.set(KEY(6), 'orig');
+  e.DB.raw.prepare(`INSERT INTO assets (id, r2_key, kind, content_type, authenticity, created_at) VALUES ('a6', ?, 'image', 'image/jpeg', 'original', '2026-11-01')`).run(KEY(6));
+  assert.equal((await call(e, 'GET', `/media/${KEY(6)}`)).status, 404);
+});
+
+test('signed-in people can preview drafts through /api/media; nobody else can', async () => {
+  const e = env();
+  const key = mediaFixture(e, 7);
+  const mine = await call(e, 'GET', `/api/media/${key}`, { as: STAFF });
+  assert.equal(mine.status, 200);
+  assert.equal(mine.headers.get('Cache-Control'), 'private, no-store');
+  assert.equal((await call(e, 'GET', `/api/media/${key}`)).status, 401);
+});
+
+// ------------------------------------------------------------ Staging: publishing switch
+
+test('SEC: live publishing is refused unless the environment explicitly enables it', async () => {
+  const e = env();
+  const res = await call(e, 'POST', '/api/contents/k1/publish', { as: OWNER, pin: '4321', body: { dryRun: false, channels: ['instagram'] } });
+  assert.equal(res.status, 403);
+  assert.match(((await res.json()) as any).error, /switched off/);
 });
