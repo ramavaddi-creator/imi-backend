@@ -5,6 +5,7 @@ import type { Env } from './env';
 import { HttpError } from './http';
 import type { Membership } from './tenancy';
 import { allocCode } from './intel';
+import { factLines } from './admin';
 
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 const clip = (s: unknown, n: number) => (typeof s === 'string' ? s.trim().slice(0, n) : '');
@@ -81,6 +82,7 @@ export async function preparePrompt(env: Env, ws: Membership, recordId: string, 
     tone ? `Tone: ${tone}.` : '',
     ws.max_headline_words ? `Headline: at most ${ws.max_headline_words} words. Open with tension, a question or a surprise in the first three words.` : '',
     extra ? `Also: ${extra}` : '',
+    ...(await factLines(env, ws.workspace_id)),
     '',
     'RULES:',
     '- Use only facts stated above. If you add anything else, mark it [suggestion].',

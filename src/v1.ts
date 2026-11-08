@@ -14,6 +14,7 @@ import { verifiedEmail } from './policy';
 import { membershipsOf, requireWorkspace, type Membership } from './tenancy';
 import { crmFetch, crmMode } from './crm_bridge';
 import { contentHash } from './studio';
+import { listMembers, addMember, changeRole, revokeMember, listFacts, addFact, retireFact, updateProfile, getProfile, toggleProvider, activity } from './admin';
 import { listProviders, addProvider, preparePrompt, createDraft, listDrafts, editDraft, approveDraft, markPosted, putMedia, getMedia, scheduleDraft, calendar, recordOutcome } from './create';
 import { feeds, parseProfile, listInbox, captureInbox, setInboxStatus, promoteInbox, listRecords, decisionHistory, decideOnRecord, listOutcomes } from './intel';
 
@@ -38,6 +39,8 @@ const toWorkspace = (m: Membership) => ({
 export async function handleV1(request: Request, env: Env, path: string): Promise<Response | null> {
   if (!path.startsWith('/v1/')) return null;
   try {
+    const admin = await handleAdmin(request, env, path);
+    if (admin) return admin;
     const created = await handleCreate(request, env, path);
     if (created) return created;
     const intel = await handleIntel(request, env, path);
@@ -235,4 +238,29 @@ async function upcoming(env: Env, ws: string) {
     .bind(ws, new Date().toISOString()).all<any>();
   return (results ?? []).map((d) => ({ id: d.id, title: d.headline, channels: [String(d.scheduled_channel ?? 'website').toLowerCase().replace(/\s.*$/, '')],
     when: d.scheduled_for, state: 'manual', stateNote: 'You post this; IMI ONE reminds you.' }));
+}
+
+// Round 4: Brand settings. Reading facts and the profile is open to members; changes are owners only.
+async function handleAdmin(request: Request, env: Env, path: string): Promise<Response | null> {
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/(members|brand-facts|profile|activity|ai-providers)(?:\/([^/]+)(?:\/(role|revoke|retire|toggle))?)?$/);
+  if (!m) return null;
+  const [, rawWs, area, rawId, action] = m;
+  if (area === 'ai-providers' && action !== 'toggle') return null; // listing and adding are in handleCreate
+  const ws = decodeURIComponent(rawWs), id = rawId ? decodeURIComponent(rawId) : '';
+  const method = request.method;
+  const body = method === 'POST' ? await request.json().catch(() => ({})) : null;
+  const need = (perm: Parameters<typeof requireWorkspace>[3]) => requireWorkspace(request, env, ws, perm);
+
+  if (area === 'members' && !id && method === 'GET') { await need('members.manage'); return json(await listMembers(env, ws)); }
+  if (area === 'members' && !id && method === 'POST') { const { email, membership } = await need('members.manage'); return json(await addMember(env, { id: ws, tenant_id: membership.tenant_id }, email, body), 201); }
+  if (area === 'members' && id && action === 'role' && method === 'POST') { const { email } = await need('members.manage'); return json(await changeRole(env, ws, email, id, body)); }
+  if (area === 'members' && id && action === 'revoke' && method === 'POST') { const { email } = await need('members.manage'); return json(await revokeMember(env, ws, email, id)); }
+  if (area === 'brand-facts' && !id && method === 'GET') { await need('today.read'); return json(await listFacts(env, ws)); }
+  if (area === 'brand-facts' && !id && method === 'POST') { const { email } = await need('members.manage'); return json(await addFact(env, ws, email, body), 201); }
+  if (area === 'brand-facts' && id && action === 'retire' && method === 'POST') { const { email } = await need('members.manage'); return json(await retireFact(env, ws, email, id)); }
+  if (area === 'profile' && !id && method === 'GET') { await need('today.read'); return json(await getProfile(env, ws)); }
+  if (area === 'profile' && !id && method === 'POST') { await need('members.manage'); return json(await updateProfile(env, ws, body)); }
+  if (area === 'ai-providers' && id && action === 'toggle' && method === 'POST') { await need('channels.connect'); return json(await toggleProvider(env, ws, id, body)); }
+  if (area === 'activity' && !id && method === 'GET') { await need('members.manage'); return json(await activity(env, ws)); }
+  return json({ error: 'not found' }, 404);
 }
