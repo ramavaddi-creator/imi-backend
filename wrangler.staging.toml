@@ -29,7 +29,7 @@ directory = "./staging-web"
 binding = "DB"
 database_name = "imi-db-staging"
 # Create with: npx wrangler d1 create imi-db-staging   then paste its id here.
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "59a52c37-1197-478b-86ad-2ed1dbbaa996"
 
 [[r2_buckets]]
 binding = "POSTERS"
