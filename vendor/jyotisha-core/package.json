@@ -1,0 +1,11 @@
+{
+  "name": "jyotisha-core",
+  "version": "2026.11.0",
+  "description": "Shared Jyotisha calculation engine for Antardrishti and IMI ONE. Astronomical calculations only; no interpretations.",
+  "type": "module",
+  "private": true,
+  "license": "UNLICENSED",
+  "exports": { "./engine": "./src/lib/engine.js", "./muhurta": "./src/lib/muhurta.js", "./panchang": "./src/panchang.js" },
+  "scripts": { "test": "node --test tests/*.test.mjs" },
+  "dependencies": { "astronomy-engine": "2.1.19" }
+}

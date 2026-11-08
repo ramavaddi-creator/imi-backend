@@ -6,8 +6,9 @@
 import { XMLParser } from 'fast-xml-parser';
 import type { Env } from './env';
 import { HttpError } from './http';
+import { dailyPanchang } from '../vendor/jyotisha-core/src/panchang.js';
 
-export type FeedItem = { id: string; sourceItemId: string; title: string; summary: string; date: string; source: string; category: string; url: string; evidenceClass: string };
+export type FeedItem = { id: string; sourceItemId: string; title: string; summary: string; date: string; source: string; category: string; url: string; evidenceClass: string; detail?: string };
 export type FeedSource = { name: string; ok: boolean; count: number; note?: string };
 
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -24,7 +25,8 @@ const get = async (f: Fetcher, url: string, accept = 'application/json') => {
 };
 
 // A brand's feed profile (server-side, from workspaces.feed_profile_json): subject and area.
-export type FeedProfile = { query?: string; lat?: number; lng?: number; radiusKm?: number; country?: string; newsKeywords?: string[] };
+export type FeedProfile = { query?: string; lat?: number; lng?: number; radiusKm?: number; country?: string; newsKeywords?: string[];
+  jyotisha?: { place: string; lat: number; lng: number; tz: string } };
 const EVIDENCE: Record<string, string> = { GBIF: 'observation_record', iNaturalist: 'observation_record', OpenAlex: 'research', Crossref: 'research', Mongabay: 'reporting' };
 
 type RawItem = Omit<FeedItem, 'sourceItemId' | 'evidenceClass'>;
@@ -88,8 +90,24 @@ export async function feeds(query: string, profile: FeedProfile = {}, f: Fetcher
     } catch (e) { return { items: [] as FeedItem[], src: { name: s.name, ok: false, count: 0, note: (e as Error).message.slice(0, 80) } }; }
   }));
   const items = results.flatMap((r) => r.items).filter((i) => i.title).sort((a, b) => b.date.localeCompare(a.date));
+  // Brands with a Jyotisha location get today's and tomorrow's Panchangam, calculated by the
+  // shared jyotisha-core engine (no network). Labelled as calculation, never as evidence.
+  const calc: FeedItem[] = [];
+  if (profile.jyotisha) {
+    const j = profile.jyotisha;
+    try {
+      for (const offset of [0, 1]) {
+        const date = new Intl.DateTimeFormat('en-CA', { timeZone: j.tz }).format(new Date(Date.now() + offset * 86400_000));
+        const p = dailyPanchang({ date, lat: j.lat, lng: j.lng, tz: j.tz, place: j.place });
+        calc.push({ id: `panchang-${date}-${j.place}`, sourceItemId: `panchang-${date}-${j.place}`, source: 'Panchangam (calculated)', category: 'Jyotisha', evidenceClass: 'calculation', date, url: '',
+          title: `Panchangam, ${j.place}, ${date}: ${p.tithiName} · ${p.nakshatra} pada ${p.pada} · ${p.yoga} yoga · ${p.karana} karana`,
+          summary: `Sunrise ${p.sunrise} · Sunset ${p.sunset} · Rahu Kalam ${p.rahuKalam?.start}–${p.rahuKalam?.end} · Abhijit ${p.abhijit?.start}–${p.abhijit?.end} · ${p.vara}`,
+          detail: JSON.stringify(p) } as FeedItem & { detail: string });
+      }
+    } catch (e) { results.push({ items: [], src: { name: 'Panchangam', ok: false, count: 0, note: (e as Error).message.slice(0, 80) } }); }
+  }
   const scope = profile.lat != null ? `Within ${profile.radiusKm ?? 50} km of the brand's location` : profile.country ? `Country: ${profile.country}` : 'Worldwide (no area set for this brand)';
-  const body = { items, retrievedAt, scope, sources: [...results.map((r) => r.src),
+  const body = { items: [...calc, ...items], retrievedAt, scope, sources: [...(profile.jyotisha && calc.length ? [{ name: 'Panchangam', ok: true, count: calc.length }] : []), ...results.map((r) => r.src),
     { name: 'eBird', ok: false, count: 0, note: 'Needs a server key and written permission for commercial use' },
     { name: 'NASA FIRMS', ok: false, count: 0, note: 'Needs a free FIRMS key on the server' }] };
   cache.set(key, { at: Date.now(), body });
@@ -128,7 +146,8 @@ export async function captureInbox(env: Env, ws: WsInfo, who: string, body: any)
   const type = ['observation', 'evidence', 'question', 'outcome'].includes(body?.type) ? body.type : 'observation';
   const fromFeed = !!body?.feedSource;
   const sourceItemId = fromFeed ? clip(body?.sourceItemId, 300) || null : null;
-  const evidence = fromFeed ? (['official', 'research', 'observation_record', 'reporting', 'opinion'].includes(body?.evidenceClass) ? body.evidenceClass : 'unverified') : 'unverified';
+  const isCalc = fromFeed && body?.evidenceClass === 'calculation';
+  const evidence = isCalc ? null : fromFeed ? (['official', 'research', 'observation_record', 'reporting', 'opinion'].includes(body?.evidenceClass) ? body.evidenceClass : 'unverified') : 'unverified';
   if (sourceItemId) {
     const dup = await env.DB.prepare('SELECT id, code FROM inbox_items WHERE workspace_id = ? AND feed_source = ? AND source_item_id = ?').bind(ws.id, clip(body.feedSource, 60), sourceItemId).first<any>();
     if (dup) return { id: dup.id, code: dup.code, duplicate: true };
@@ -140,7 +159,7 @@ export async function captureInbox(env: Env, ws: WsInfo, who: string, body: any)
         source_reference, source_category, source_type, feed_source, source_item_id, published_at, retrieved_at, evidence_class, workspace_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'member', 'none', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, code, ws.domain, type, now().slice(0, 10), summary, fromFeed ? 'secondary_external' : 'primary_internal', who,
-        clip(body?.fullText, 4000) || summary, clip(body?.url, 500) || null, clip(body?.category, 60) || null,
+        clip(body?.fullText, 8000) || summary, clip(body?.url, 500) || null, isCalc ? 'calculation' : clip(body?.category, 60) || null,
         fromFeed ? 'feed' : 'manual', fromFeed ? clip(body.feedSource, 60) : null, sourceItemId,
         clip(body?.publishedAt, 40) || null, fromFeed ? clip(body?.retrievedAt, 40) || new Date().toISOString() : null, evidence, ws.id, now()).run();
   } catch (e) {
