@@ -13,6 +13,8 @@ import { HttpError, json } from './http';
 import { verifiedEmail } from './policy';
 import { membershipsOf, requireWorkspace, type Membership } from './tenancy';
 import { crmFetch, crmMode } from './crm_bridge';
+import { can } from './tenancy';
+import { legacyWorkspace } from './aibudget';
 import { contentHash } from './studio';
 import { usage as aiUsage, setBudget as setAiBudget } from './aibudget';
 import { listMembers, addMember, changeRole, revokeMember, listFacts, addFact, retireFact, updateProfile, getProfile, toggleProvider, activity } from './admin';
@@ -62,6 +64,12 @@ export async function handleV1(request: Request, env: Env, path: string): Promis
       const email = verifiedEmail(request);
       if (!email) throw new HttpError(401, 'Sign in through Cloudflare Access first.');
       return json((await membershipsOf(env, email)).map(toWorkspace));
+    }
+    const crmView = path.match(/^\/v1\/workspaces\/([^/]+)\/crm\/pipeline$/);
+    if (crmView) {
+      const ws = decodeURIComponent(crmView[1]);
+      const { membership } = await requireWorkspace(request, env, ws, 'results.read');
+      return json(await crmPipeline(env, ws, membership.role));
     }
     const m = path.match(/^\/v1\/workspaces\/([^/]+)\/today$/);
     if (m) {
@@ -272,4 +280,16 @@ async function handleAdmin(request: Request, env: Env, path: string): Promise<Re
   if (area === 'ai-budget' && !id && method === 'GET') { await need('members.manage'); return json(await aiUsage(env, ws)); }
   if (area === 'ai-budget' && !id && method === 'POST') { const { email } = await need('members.manage'); return json(await setAiBudget(env, ws, email, body)); }
   return json({ error: 'not found' }, 404);
+}
+
+// Round 7: CRM views. The CRM is the source of truth and filters fields itself; IMI ONE only
+// states what this person's role allows (money, margin). Only the brand that owns the CRM has one.
+async function crmPipeline(env: Env, ws: string, role: Parameters<typeof can>[0]) {
+  if (ws !== legacyWorkspace(env) || !crmMode(env)) throw new HttpError(404, 'This brand has no CRM connected.');
+  const scope = [can(role, 'money.read') ? 'money' : '', can(role, 'margin.read') ? 'margin' : ''].filter(Boolean).join(',');
+  const url = new URL('/integrations/imi/pipeline', env.CRM_URL);
+  const res = await crmFetch(env, url.toString(), { headers: { 'x-imi-feed-key': env.CRM_SERVICE_KEY!, ...(scope ? { 'x-imi-scope': scope } : {}) }, signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new HttpError(502, `The CRM answered ${res.status}.`);
+  const body = await res.json() as Record<string, unknown>;
+  return { ...body, crmUrl: env.CRM_PUBLIC_URL || null, source: 'Iddav CRM', retrievedAt: new Date().toISOString() };
 }

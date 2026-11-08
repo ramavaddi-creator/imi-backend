@@ -52,6 +52,8 @@ ENQUIRY_ORIGINS = ""
 # Used only for the request path; the call goes through CRM_SERVICE.
 CRM_URL = "https://iddav-crm-staging.internal"
 DATA_ENVIRONMENT = "staging"
+# "Open in the CRM" links.
+CRM_PUBLIC_URL = "https://iddav-crm-staging.ramavaddi.workers.dev"
 # Secrets (set with: npx wrangler secret put NAME -c wrangler.staging.toml):
 #   CRM_SERVICE_KEY  = the staging CRM's IMI_FEED_KEY (new random value, never production's)
 #   OWNER_PIN        = a new staging PIN

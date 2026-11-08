@@ -31,6 +31,8 @@ export interface Env {
   DATA_ENVIRONMENT?: string;
   // Brand that owns the legacy single-brand /api routes (old Content Studio). Default ws-iddav.
   LEGACY_WORKSPACE?: string;
+  // The CRM's own address for 'Open in the CRM' links (quotes, pricing, bookings, payments stay there).
+  CRM_PUBLIC_URL?: string;
   // Optional service binding to the CRM Worker. When present, IMI calls the CRM
   // privately, Worker to Worker, never over the public internet (so a CRM behind
   // Cloudflare Access is still reachable). CRM_URL is then only used for the path.
