@@ -23,6 +23,24 @@ proposals; they were run only inside the automated tests.
 
 Not yet done (P1 #8, #10, #11): durable ingestion, the live inventory, and source licensing sign-off. See below.
 
+## Inventory (live, read-only, 8 Nov 2026)
+
+6 inbox items (4 evidence, 1 observation, 1 outcome; 18 Sep to 8 Nov 2026) and 4 records,
+all labelled `iddav-marketing-intelligence`. 0 decisions, 0 outcomes, 0 campaigns, 0 posts.
+No duplicate codes. The mapping (Iddav label → ws-iddav) was approved in principle.
+
+## Migration rehearsal
+
+Automated (`test/migration.test.ts`): a database shaped like live (schemas to v7, the 6 + 4
+rows), then v8, v9, v10 and `assign-workspaces.sql`. Proves: counts and content unchanged;
+only Iddav-labelled rows assigned; a row with another label stays unassigned; no broken
+links; numbering continues (INB-0007 next); the Iddav owner sees the 4 records, another
+brand sees none and gets 404 for Iddav.
+
+On Cloudflare: `scripts/migration-rehearsal.sh` exports live (read-only) into a new,
+isolated database `imi-db-migtest`, applies the same sequence and prints before/after
+counts and checks. Remove the copy afterwards (command printed by the script).
+
 ## Migration and rollback
 
 Staging: apply `schema_v10.sql` to `imi-db-staging` only. Production (later, with approval):

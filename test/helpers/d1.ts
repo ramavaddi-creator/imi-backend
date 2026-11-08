@@ -4,7 +4,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 
-const SCHEMAS = ['schema.sql', 'schema_v2.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql', 'schema_v8.sql', 'schema_v9.sql', 'schema_v10.sql'];
+export const SCHEMAS = ['schema.sql', 'schema_v2.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql', 'schema_v8.sql', 'schema_v9.sql', 'schema_v10.sql'];
 const clean = (a: unknown[]) => a.map((v) => (v === undefined ? null : typeof v === 'boolean' ? Number(v) : v)) as any[];
 
 class Stmt {
@@ -20,9 +20,9 @@ class Stmt {
   runSync() { const r = this.db.prepare(this.sql).run(...clean(this.args)); return { success: true, meta: { changes: Number(r.changes) } }; }
 }
 
-export function makeD1() {
+export function makeD1(schemas: string[] = SCHEMAS) {
   const db = new DatabaseSync(':memory:');
-  for (const f of SCHEMAS) db.exec(readFileSync(f, 'utf8'));
+  for (const f of schemas) db.exec(readFileSync(f, 'utf8'));
   return {
     raw: db,
     prepare: (sql: string) => new Stmt(db, sql),

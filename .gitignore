@@ -6,3 +6,5 @@ backups/
 hard_delete_cases.sql
 timetravel-before-v4.txt
 staging-web/
+migtest-live-export.sql
+wrangler.migtest.toml
