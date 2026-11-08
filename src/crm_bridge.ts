@@ -24,9 +24,9 @@ export async function fetchCrmCampaign(env: Env, code: string, since?: string | 
   url.searchParams.set('campaign', code);
   if (since) url.searchParams.set('since', since);
   let res: Response;
-  try { res = await fetchImpl(url.toString(), { headers: { 'x-intake-key': env.CRM_SERVICE_KEY! }, signal: AbortSignal.timeout(8000) }); }
+  try { res = await fetchImpl(url.toString(), { headers: { 'x-imi-feed-key': env.CRM_SERVICE_KEY! }, signal: AbortSignal.timeout(8000) }); }
   catch { throw new HttpError(502, 'The CRM could not be reached. Try again in a minute.'); }
-  if (res.status === 401) throw new HttpError(502, "The CRM rejected IMI's service key. CRM_SERVICE_KEY here must equal INTAKE_KEY on the CRM.");
+  if (res.status === 401) throw new HttpError(502, "The CRM rejected IMI's feed key. CRM_SERVICE_KEY here must equal IMI_FEED_KEY on the CRM.");
   if (!res.ok) throw new HttpError(502, `The CRM answered ${res.status}.`);
   const body = (await res.json().catch(() => null)) as { imi_campaigns?: CrmCampaign[] } | null;
   if (!body || !Array.isArray(body.imi_campaigns)) throw new HttpError(502, 'The CRM answered in a form IMI does not recognise. Update the CRM to its latest version.');

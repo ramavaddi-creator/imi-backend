@@ -3,6 +3,7 @@ import { XMLParser } from 'fast-xml-parser';
 import type { Env } from './env';
 import { json, CORS_HEADERS, HttpError, errMsg, actor } from './http';
 import { gate, applyCors, requireOwner, verifiedEmail, isOwner } from './policy';
+import { handleV1 } from './v1';
 import { handleStudioRoutes, serveMedia } from './studio';
 import { handleConnectionRoutes, handleOAuthCallback } from './connections';
 import { handleCrmRoutes, handlePublicEnquiry } from './crm';
@@ -170,6 +171,10 @@ async function route(request: Request, env: Env): Promise<Response> {
 
     // Gate 1: the shared X-API-Key check is retired. Every non-public request
     // has already passed gate() with a verified Cloudflare Access identity.
+    // IMI ONE API (workspace-scoped). gate() has already verified the identity.
+    const v1 = await handleV1(request, env, path);
+    if (v1) return v1;
+
     if (request.method === 'GET' && path === '/api/whoami') {
       const email = verifiedEmail(request);
       return json({ email, owner: isOwner(env, email) });

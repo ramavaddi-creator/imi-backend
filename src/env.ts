@@ -27,6 +27,8 @@ export interface Env {
   // Live publishing switch and emergency stop. Anything other than "true"
   // blocks real posts (tests/dry runs still work). Staging never sets it.
   PUBLISHING_ENABLED?: string;
+  // 'production' only in the production config. Anything else is labelled staging in the app.
+  DATA_ENVIRONMENT?: string;
 
   // The Iddav CRM: the one place enquiries, quotes and bookings live (DEC-IMI-003). IMI reads campaign results from it.
   // CRM_SERVICE_KEY must equal INTAKE_KEY on the CRM Worker. Set it with `wrangler secret put CRM_SERVICE_KEY`.

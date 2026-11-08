@@ -26,5 +26,6 @@ ACCESS_AUD = ""
 OWNER_EMAILS = ""
 APP_URL = ""
 ENQUIRY_ORIGINS = ""
+DATA_ENVIRONMENT = "staging"
 # PUBLISHING_ENABLED is deliberately absent: staging can never post for real.
 # No CRM_URL, no platform client IDs, no AI keys: staging uses none of production's credentials.

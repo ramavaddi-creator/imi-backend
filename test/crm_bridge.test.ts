@@ -26,10 +26,10 @@ test('the CRM is asked with its key in a header, the answer is checked, and ever
   const spy = (async (u: string, init: RequestInit) => { seen.push({ url: u, headers: init.headers }); return new Response(JSON.stringify({ imi_campaigns: [camp] }), { status: 200 }); }) as unknown as typeof fetch;
   const got = await fetchCrmCampaign(env(), 'cmp-0003', '2026-11-01T00:00:00Z', spy);
   assert.equal(got!.enquiries, 5);
-  assert.equal(seen[0]!.headers['x-intake-key'], 'key-123'); assert.ok(!seen[0]!.url.includes('key-123'), 'the key is never in the address');
+  assert.equal(seen[0]!.headers['x-imi-feed-key'], 'key-123'); assert.ok(!seen[0]!.url.includes('key-123'), 'the key is never in the address');
   assert.match(seen[0]!.url, /^https:\/\/crm\.example\/integrations\/imi\/outcomes\?campaign=cmp-0003&since=/);
   assert.equal(await fetchCrmCampaign(env(), 'CMP-9999', null, spy), null, 'a campaign the CRM has not seen');
-  await assert.rejects(fetchCrmCampaign(env(), 'CMP-0003', null, reply(401, {})), /rejected IMI's service key/);
+  await assert.rejects(fetchCrmCampaign(env(), 'CMP-0003', null, reply(401, {})), /rejected IMI's feed key/);
   await assert.rejects(fetchCrmCampaign(env(), 'CMP-0003', null, reply(500, {})), /answered 500/);
   await assert.rejects(fetchCrmCampaign(env(), 'CMP-0003', null, reply(200, { campaigns: [] })), /does not recognise/);
   await assert.rejects(fetchCrmCampaign(env(), 'CMP-0003', null, (async () => { throw new Error('down'); }) as unknown as typeof fetch), /could not be reached/);

@@ -17,6 +17,8 @@ binding = "POSTERS"
 bucket_name = "imi-posters"
 
 [vars]
+# Labels this deployment's data in the app. Only the production config says production.
+DATA_ENVIRONMENT = "production"
 ANTHROPIC_MODEL = "claude-sonnet-5-5"
 OPENAI_TEXT_MODEL = "gpt-4o-mini"
 OPENAI_IMAGE_MODEL = "gpt-image-2"

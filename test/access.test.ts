@@ -368,7 +368,7 @@ test('CRM outcomes bridge still works for a signed-in user, and the CRM stays th
   let seen: { url: string; key: string | null; jwt: string | null } | null = null;
   outbound = async (url, init) => {
     const h = new Headers(init?.headers);
-    seen = { url, key: h.get('x-intake-key'), jwt: h.get('Cf-Access-Jwt-Assertion') };
+    seen = { url, key: h.get('x-imi-feed-key'), jwt: h.get('Cf-Access-Jwt-Assertion') };
     return new Response(JSON.stringify({ imi_campaigns: [{ code: 'CMP-0003', enquiries: 5, tracked: 5, qualified: 3, quoted: 2, booked: 1, lost: 2, room_nights: 2,
       booked_value: 16798, revenue_paid: 16798, contribution: 9998, contribution_known: true, top_loss_reason: 'price', median_first_reply_hours: null, by_tag: {}, by_post: {} }] }));
   };
