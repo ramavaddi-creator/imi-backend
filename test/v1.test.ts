@@ -75,7 +75,7 @@ test('M1: Today for the authorised brand shows only that brand\'s data, each ite
   assert.deepEqual(t.data.needsYou.map((x: any) => x.kind).sort(), ['approve_post', 'review_decision']);
   assert.equal(t.data.isSample, false); assert.equal(t.data.environment, 'staging');
   assert.deepEqual(t.data.goal.trust, { kind: 'unavailable', source: 'Iddav CRM', detail: 'The CRM is not connected in this environment.' }, 'no made-up number when there is no source');
-  assert.deepEqual(t.data.upcoming, []); assert.match(t.data.notes[0], /Scheduling is not built yet/);
+  assert.deepEqual(t.data.upcoming, []); assert.deepEqual(t.data.notes, []);
 });
 
 test('M1: an approved post no longer asks for approval', async () => {

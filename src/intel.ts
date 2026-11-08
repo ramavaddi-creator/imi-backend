@@ -99,7 +99,7 @@ export async function feeds(query: string, profile: FeedProfile = {}, f: Fetcher
 // ------------------------------------------------------------------ codes, guard, brand settings
 
 // Atomic code allocation (INB-0001...): one UPDATE...RETURNING, never COUNT(*)+1.
-export async function allocCode(env: Env, prefix: 'INB' | 'INT' | 'DEC') {
+export async function allocCode(env: Env, prefix: 'INB' | 'INT' | 'DEC' | 'OUT') {
   const r = await env.DB.prepare('INSERT INTO code_counters (name, n) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET n = n + 1 RETURNING n').bind(prefix).first<{ n: number }>();
   return `${prefix}-${String(r!.n).padStart(4, '0')}`;
 }

@@ -14,7 +14,7 @@ import { verifiedEmail } from './policy';
 import { membershipsOf, requireWorkspace, type Membership } from './tenancy';
 import { crmFetch, crmMode } from './crm_bridge';
 import { contentHash } from './studio';
-import { listProviders, addProvider, preparePrompt, createDraft, listDrafts, editDraft, approveDraft, markPosted, putMedia, getMedia } from './create';
+import { listProviders, addProvider, preparePrompt, createDraft, listDrafts, editDraft, approveDraft, markPosted, putMedia, getMedia, scheduleDraft, calendar, recordOutcome } from './create';
 import { feeds, parseProfile, listInbox, captureInbox, setInboxStatus, promoteInbox, listRecords, decisionHistory, decideOnRecord, listOutcomes } from './intel';
 
 const GOALS: Record<string, { label: string; phrase: string }> = {
@@ -93,6 +93,22 @@ async function today(env: Env, ws: Membership) {
     needsYou.push({ id: `draft-${d.id}`, kind: 'approve_post', subject: d.headline, title: `Approve "${d.headline}"`,
       why: 'It will not go out until you approve it.', action: { label: 'Review post', screen: 'create', ref: d.id } });
   }
+  // Scheduled posts that are due: the owner posts them by hand, then marks them as posted.
+  const { results: due } = await env.DB.prepare(
+    "SELECT id, headline FROM drafts WHERE workspace_id = ? AND status = 'approved' AND scheduled_for IS NOT NULL AND scheduled_for <= ? ORDER BY scheduled_for LIMIT 3")
+    .bind(id, new Date().toISOString()).all<any>();
+  for (const d of due ?? []) {
+    needsYou.push({ id: `due-${d.id}`, kind: 'approve_post', subject: d.headline, title: d.headline,
+      why: 'It was scheduled for now. Post it, then mark it as posted.', action: { label: 'Post it now', screen: 'create', ref: d.id } });
+  }
+  // A week after posting: ask for results, so the outcome is linked to the post and its decision.
+  const { results: ripe } = await env.DB.prepare(
+    `SELECT d.id, d.headline FROM drafts d WHERE d.workspace_id = ? AND d.status = 'posted' AND d.posted_at <= datetime('now', '-7 days')
+       AND NOT EXISTS (SELECT 1 FROM outcome_items o WHERE o.draft_id = d.id) ORDER BY d.posted_at LIMIT 3`).bind(id).all<any>();
+  for (const d of ripe ?? []) {
+    needsYou.push({ id: `results-${d.id}`, kind: 'review_learning', subject: d.headline, title: d.headline,
+      why: 'Results are in? Record what happened, so IMI ONE can learn.', action: { label: 'Record results', screen: 'create', ref: d.id } });
+  }
   // Records waiting for a decision (decisions are made on the record itself).
   const { results: open } = await env.DB.prepare(
     "SELECT id, code, title FROM intelligence_records WHERE workspace_id = ? AND status IN ('open', 'under_review', 'draft') ORDER BY updated_at DESC LIMIT 3").bind(id).all<any>();
@@ -109,8 +125,8 @@ async function today(env: Env, ws: Membership) {
     workspaceId: id, isSample: false, environment: environment(env),
     goal: await goal(env, ws),
     needsYou: needsYou.slice(0, 3),
-    upcoming: [],
-    notes: ['Scheduling is not built yet. Approved posts are published from Content Studio.'],
+    upcoming: await upcoming(env, id),
+    notes: [],
     setup: [{ id: 's3', label: 'Make your first post', done: !!published, screen: 'create' }],
     security: [],
   };
@@ -184,7 +200,7 @@ async function handleIntel(request: Request, env: Env, path: string): Promise<Re
 
 // Round 2: Send to AI, Bring back from AI, drafts, approval, Mark as posted.
 async function handleCreate(request: Request, env: Env, path: string): Promise<Response | null> {
-  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/(ai-providers|drafts|records)(?:\/([^/]+)(?:\/(prompt|edit|approve|posted|media))?)?$/);
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/(ai-providers|drafts|records|calendar)(?:\/([^/]+)(?:\/(prompt|edit|approve|posted|media|schedule|outcome))?)?$/);
   if (!m) return null;
   const [, rawWs, area, rawId, action] = m;
   if (area === 'records' && action !== 'prompt') return null; // other record routes are handled by handleIntel
@@ -203,5 +219,20 @@ async function handleCreate(request: Request, env: Env, path: string): Promise<R
   if (area === 'drafts' && id && action === 'posted' && method === 'POST') { const { email } = await need('content.publish'); return json(await markPosted(env, ws, id, email, body)); }
   if (area === 'drafts' && id && action === 'media' && method === 'PUT') { await need('content.create'); return json(await putMedia(env, ws, id, request)); }
   if (area === 'drafts' && id && action === 'media' && method === 'GET') { await need('today.read'); return getMedia(env, ws, id); }
+  if (area === 'drafts' && id && action === 'schedule' && method === 'POST') { await need('content.publish'); return json(await scheduleDraft(env, ws, id, body)); }
+  if (area === 'drafts' && id && action === 'outcome' && method === 'POST') {
+    const { email, membership } = await need('content.create');
+    return json(await recordOutcome(env, { id: ws, domain: membership.record_domain || ws }, id, email, body), 201);
+  }
+  if (area === 'calendar' && !id && method === 'GET') { await need('today.read'); return json(await calendar(env, ws, new URL(request.url).searchParams.get('month') ?? '')); }
   return json({ error: 'not found' }, 404);
+}
+
+// The next scheduled posts (approved drafts with a time), in the Today shape.
+async function upcoming(env: Env, ws: string) {
+  const { results } = await env.DB.prepare(
+    "SELECT id, headline, scheduled_for, scheduled_channel FROM drafts WHERE workspace_id = ? AND status = 'approved' AND scheduled_for > ? ORDER BY scheduled_for LIMIT 3")
+    .bind(ws, new Date().toISOString()).all<any>();
+  return (results ?? []).map((d) => ({ id: d.id, title: d.headline, channels: [String(d.scheduled_channel ?? 'website').toLowerCase().replace(/\s.*$/, '')],
+    when: d.scheduled_for, state: 'manual', stateNote: 'You post this; IMI ONE reminds you.' }));
 }

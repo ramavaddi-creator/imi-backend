@@ -4,6 +4,7 @@
 import type { Env } from './env';
 import { HttpError } from './http';
 import type { Membership } from './tenancy';
+import { allocCode } from './intel';
 
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 const clip = (s: unknown, n: number) => (typeof s === 'string' ? s.trim().slice(0, n) : '');
@@ -131,7 +132,8 @@ export async function createDraft(env: Env, ws: string, who: string, body: any) 
 export async function listDrafts(env: Env, ws: string, recordId: string | null) {
   const { results } = await env.DB.prepare(
     `SELECT d.id, d.record_id, r.code AS record_code, d.headline, d.caption, d.format, d.source, d.media_type, d.ai_generated_media, d.version, d.status,
-       d.created_by, d.created_at, d.updated_at, d.approved_by, d.approved_at, d.posted_url, d.posted_channel, d.posted_at, (d.media_key IS NOT NULL) AS has_media
+       d.created_by, d.created_at, d.updated_at, d.approved_by, d.approved_at, d.posted_url, d.posted_channel, d.posted_at, (d.media_key IS NOT NULL) AS has_media,
+       d.scheduled_for, d.scheduled_channel, (SELECT o.code FROM outcome_items o WHERE o.draft_id = d.id) AS outcome_code
      FROM drafts d LEFT JOIN intelligence_records r ON r.id = d.record_id
      WHERE d.workspace_id = ? ${recordId ? 'AND d.record_id = ?' : ''} ORDER BY d.updated_at DESC LIMIT 100`).bind(...(recordId ? [ws, recordId] : [ws])).all<any>();
   return (results ?? []).map((d) => ({ ...d, ai_generated_media: !!d.ai_generated_media, has_media: !!d.has_media }));
@@ -148,7 +150,7 @@ export async function editDraft(env: Env, ws: string, id: string, body: any) {
   const d = await getDraft(env, ws, id);
   if (d.status === 'posted') throw new HttpError(409, 'This draft has been posted; make a new draft instead.');
   const headline = clip(body?.headline, 200) || d.headline, caption = clip(body?.caption, 2200) || d.caption;
-  await env.DB.prepare(`UPDATE drafts SET headline = ?, caption = ?, version = version + 1, status = 'draft', approved_by = NULL, approved_at = NULL, approved_version = NULL, updated_at = ?
+  await env.DB.prepare(`UPDATE drafts SET headline = ?, caption = ?, version = version + 1, status = 'draft', approved_by = NULL, approved_at = NULL, approved_version = NULL, scheduled_for = NULL, scheduled_channel = NULL, updated_at = ?
     WHERE id = ? AND workspace_id = ? AND version = ?`).bind(headline, caption, now(), id, ws, d.version).run();
   return { id, version: d.version + 1, status: 'draft' };
 }
@@ -190,7 +192,7 @@ export async function putMedia(env: Env, ws: string, id: string, request: Reques
   const key = `drafts/${ws}/${id}/${crypto.randomUUID()}.${MEDIA[type]}`;
   await env.POSTERS.put(key, buf, { httpMetadata: { contentType: type } });
   await env.DB.prepare(`UPDATE drafts SET media_key = ?, media_type = ?, ai_generated_media = ?, version = version + 1, status = 'draft', approved_by = NULL, approved_at = NULL,
-      approved_version = NULL, updated_at = ? WHERE id = ? AND workspace_id = ?`).bind(key, type, aiMade ? 1 : 0, now(), id, ws).run();
+      approved_version = NULL, scheduled_for = NULL, scheduled_channel = NULL, updated_at = ? WHERE id = ? AND workspace_id = ?`).bind(key, type, aiMade ? 1 : 0, now(), id, ws).run();
   return { id, mediaType: type, aiGenerated: aiMade };
 }
 
@@ -200,4 +202,85 @@ export async function getMedia(env: Env, ws: string, id: string) {
   const obj = await env.POSTERS.get(d.media_key);
   if (!obj) throw new HttpError(404, 'No image');
   return new Response(obj.body, { headers: { 'Content-Type': d.media_type, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
+}
+
+// ------------------------------------------------------------------ round 3: schedule, calendar, outcomes
+
+export const CHANNELS = ['Instagram', 'Facebook', 'LinkedIn', 'Threads', 'WhatsApp Status', 'Website'];
+
+// Only an approved draft can be scheduled. Without direct publishing, the owner posts it
+// and IMI ONE reminds them when it is due. {when: null} removes it from the calendar.
+export async function scheduleDraft(env: Env, ws: string, id: string, body: any) {
+  const d = await getDraft(env, ws, id);
+  if (body?.when === null) {
+    await env.DB.prepare('UPDATE drafts SET scheduled_for = NULL, scheduled_channel = NULL WHERE id = ? AND workspace_id = ?').bind(id, ws).run();
+    return { id, scheduledFor: null };
+  }
+  if (d.status !== 'approved') throw new HttpError(409, 'Approve the draft before scheduling it.');
+  // Moving on the calendar: a new date only, keeping the scheduled time of day and channel.
+  if (typeof body?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date) && d.scheduled_for) {
+    body = { when: `${body.date}T${String(d.scheduled_for).slice(11)}`, channel: d.scheduled_channel };
+  }
+  const when = new Date(String(body?.when ?? ''));
+  if (Number.isNaN(when.getTime())) throw new HttpError(400, 'Choose a date and time.');
+  if (when.getTime() < Date.now() - 60_000) throw new HttpError(400, 'Choose a time in the future.');
+  if (when.getTime() > Date.now() + 366 * 86400_000) throw new HttpError(400, 'Choose a time within the next year.');
+  const channel = CHANNELS.includes(body?.channel) ? body.channel : null;
+  if (!channel) throw new HttpError(400, 'Choose where it will be posted.');
+  const iso = when.toISOString();
+  await env.DB.prepare("UPDATE drafts SET scheduled_for = ?, scheduled_channel = ? WHERE id = ? AND workspace_id = ? AND status = 'approved'").bind(iso, channel, id, ws).run();
+  return { id, scheduledFor: iso, channel };
+}
+
+const channelId = (c: string | null) => (c ? c.toLowerCase().replace(/\s.*$/, '') : 'website');
+
+// Calendar for one month (YYYY-MM): scheduled drafts and posted ones, in the calendar's own shape.
+export async function calendar(env: Env, ws: string, month: string) {
+  if (!/^\d{4}-\d{2}$/.test(month)) throw new HttpError(400, 'Month as YYYY-MM.');
+  const { results } = await env.DB.prepare(
+    `SELECT id, headline, status, scheduled_for, scheduled_channel, posted_at, posted_channel FROM drafts
+     WHERE workspace_id = ? AND ((status = 'approved' AND substr(scheduled_for, 1, 7) = ?) OR (status = 'posted' AND substr(COALESCE(scheduled_for, posted_at), 1, 7) = ?))
+     ORDER BY COALESCE(scheduled_for, posted_at)`).bind(ws, month, month).all<any>();
+  return {
+    posts: (results ?? []).map((d) => ({
+      id: d.id, title: d.headline,
+      channels: [channelId(d.status === 'posted' ? d.posted_channel : d.scheduled_channel)],
+      when: d.scheduled_for ?? new Date(String(d.posted_at).replace(' ', 'T') + 'Z').toISOString(),
+      state: d.status === 'posted' ? 'published' : 'manual',
+      stateNote: d.status === 'posted' ? 'Posted' : 'You post this; IMI ONE reminds you.',
+    })),
+    blocks: [],
+  };
+}
+
+// Results of a posted draft become an outcome, linked to the record's current decision.
+export async function recordOutcome(env: Env, ws: { id: string; domain: string }, draftId: string, who: string, body: any) {
+  const d = await getDraft(env, ws.id, draftId);
+  if (d.status !== 'posted') throw new HttpError(409, 'Results are recorded after the post is live.');
+  const summary = clip(body?.summary, 1000);
+  if (summary.length < 3) throw new HttpError(400, 'Say what happened, in a sentence.');
+  const conf = ['low', 'medium', 'high'].includes(body?.confidence) ? body.confidence : null;
+  if (!conf) throw new HttpError(400, 'Say how sure you are that the post caused this.');
+  const reason = clip(body?.reason, 500);
+  if (reason.length < 3) throw new HttpError(400, 'Say why you are that sure.');
+  const metrics: Record<string, number> = {};
+  for (const k of ['reach', 'engagements', 'enquiries', 'bookings']) {
+    if (body?.[k] === undefined || body?.[k] === null || body?.[k] === '') continue;
+    const n = Number(body[k]);
+    if (!Number.isInteger(n) || n < 0 || n > 1e9) throw new HttpError(400, `${k} must be a whole number.`);
+    metrics[k] = n;
+  }
+  const dec = d.record_id ? await env.DB.prepare('SELECT code FROM decision_items WHERE record_id = ? AND workspace_id = ? AND superseded_by IS NULL').bind(d.record_id, ws.id).first<any>() : null;
+  const id = crypto.randomUUID(), code = await allocCode(env, 'OUT');
+  try {
+    await env.DB.prepare(`INSERT INTO outcome_items (id, code, domain, decision_code, action_taken, actual_outcome, date_evaluated, evaluator, retrospective,
+        quantitative_results_json, attribution_confidence_level, attribution_confidence_reason, resulting_learning_json, workspace_id, draft_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, '[]', ?, ?)`)
+      .bind(id, code, ws.domain, dec?.code ?? 'none', `Posted "${clip(d.headline, 150)}" on ${d.posted_channel}`, summary, now().slice(0, 10), who,
+        JSON.stringify({ ...metrics, source: 'entered by hand' }), conf, reason, ws.id, d.id).run();
+  } catch (e) {
+    if (/UNIQUE/i.test(String(e))) throw new HttpError(409, 'Results for this post are already recorded.');
+    throw e;
+  }
+  return { id, code, decisionCode: dec?.code ?? null };
 }
