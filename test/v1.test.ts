@@ -42,6 +42,9 @@ function world(over: Record<string, unknown> = {}) {
         retrospective, options_considered_json, selected_option, rationale, confidence_level, confidence_reason, workspace_id)
        VALUES ('d1','DEC-0101','x','IDDAV-ONLY decision','p','R','A','pending','Owner','none','[]','s','r','low','r','ws-iddav'),
               ('d2','DEC-0201','x','ANTARDRISHTI-ONLY decision','p','R','A','pending','Owner','none','[]','s','r','low','r','ws-antardrishti')`);
+  const rec = (id: string, title: string, ws: string) => run(`INSERT INTO intelligence_records (id, code, domain, record_type, title, status, created_at, updated_at, author, author_role, observation_json, learning_strength, workspace_id)
+    VALUES (?, ?, 'x', 'observation', ?, 'open', ?, ?, 'seed', 'owner_admin', '{}', 'provisional', ?)`, id, `INT-${id}`, title, at, at, ws);
+  rec('r1', 'IDDAV-ONLY record awaiting a decision', 'ws-iddav'); rec('r2', 'ANTARDRISHTI-ONLY record', 'ws-antardrishti');
   return { DB, ACCESS_TEAM_DOMAIN: undefined, ACCESS_AUD: undefined, ...over } as any;
 }
 // Each person signs in through the local-development identity (localhost only);
@@ -67,7 +70,7 @@ test('M1: Today for the authorised brand shows only that brand\'s data, each ite
   const t = await body(await as(OWNER, env, '/v1/workspaces/ws-iddav/today'));
   assert.equal(t.status, 200);
   const text = JSON.stringify(t.data);
-  assert.ok(text.includes('IDDAV-ONLY tiger dawn walk') && text.includes('IDDAV-ONLY decision'));
+  assert.ok(text.includes('IDDAV-ONLY tiger dawn walk') && text.includes('IDDAV-ONLY record awaiting a decision'));
   assert.ok(!text.includes('ANTARDRISHTI-ONLY'), 'no record of another brand leaks into Today');
   assert.deepEqual(t.data.needsYou.map((x: any) => x.kind).sort(), ['approve_post', 'review_decision']);
   assert.equal(t.data.isSample, false); assert.equal(t.data.environment, 'staging');

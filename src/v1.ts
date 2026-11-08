@@ -14,6 +14,7 @@ import { verifiedEmail } from './policy';
 import { membershipsOf, requireWorkspace, type Membership } from './tenancy';
 import { crmFetch, crmMode } from './crm_bridge';
 import { contentHash } from './studio';
+import { listProviders, addProvider, preparePrompt, createDraft, listDrafts, editDraft, approveDraft, markPosted, putMedia, getMedia } from './create';
 import { feeds, parseProfile, listInbox, captureInbox, setInboxStatus, promoteInbox, listRecords, decisionHistory, decideOnRecord, listOutcomes } from './intel';
 
 const GOALS: Record<string, { label: string; phrase: string }> = {
@@ -37,6 +38,8 @@ const toWorkspace = (m: Membership) => ({
 export async function handleV1(request: Request, env: Env, path: string): Promise<Response | null> {
   if (!path.startsWith('/v1/')) return null;
   try {
+    const created = await handleCreate(request, env, path);
+    if (created) return created;
     const intel = await handleIntel(request, env, path);
     if (intel) return intel;
     if (request.method !== 'GET') return json({ error: 'not found' }, 404);
@@ -83,12 +86,19 @@ async function today(env: Env, ws: Membership) {
     if (!ok) needsYou.push({ id: `content-${c.id}`, kind: 'approve_post', subject: c.headline, title: `Approve "${c.headline}"`,
       why: 'It will not go out until you approve it.', action: { label: 'Review post', screen: 'create', ref: c.id } });
   }
-  // Decisions waiting for approval.
-  const { results: decisions } = await env.DB.prepare(
-    "SELECT id, code, title FROM decision_items WHERE workspace_id = ? AND approval_status = 'pending' ORDER BY rowid LIMIT 3").bind(id).all<any>();
-  for (const d of decisions ?? []) {
-    needsYou.push({ id: `decision-${d.id}`, kind: 'review_decision', subject: d.title, title: d.title,
-      why: 'Waiting for approval', action: { label: 'Review decision', screen: 'intelligence', ref: d.id } });
+  // Drafts waiting for the owner's approval (round 2).
+  const { results: drafts } = await env.DB.prepare(
+    "SELECT id, headline FROM drafts WHERE workspace_id = ? AND status = 'draft' ORDER BY updated_at DESC LIMIT 3").bind(id).all<any>();
+  for (const d of drafts ?? []) {
+    needsYou.push({ id: `draft-${d.id}`, kind: 'approve_post', subject: d.headline, title: `Approve "${d.headline}"`,
+      why: 'It will not go out until you approve it.', action: { label: 'Review post', screen: 'create', ref: d.id } });
+  }
+  // Records waiting for a decision (decisions are made on the record itself).
+  const { results: open } = await env.DB.prepare(
+    "SELECT id, code, title FROM intelligence_records WHERE workspace_id = ? AND status IN ('open', 'under_review', 'draft') ORDER BY updated_at DESC LIMIT 3").bind(id).all<any>();
+  for (const r of open ?? []) {
+    needsYou.push({ id: `record-${r.id}`, kind: 'review_decision', subject: r.title, title: r.title,
+      why: 'Waiting for a decision', action: { label: 'Decide', screen: 'intelligence', ref: r.id } });
   }
 
   const published = await env.DB.prepare(
@@ -169,5 +179,29 @@ async function handleIntel(request: Request, env: Env, path: string): Promise<Re
     const { email, info } = await need('decide'); const r = await decideOnRecord(env, info, itemId, email, body); return json(r, r.replayed ? 200 : 201);
   }
   if (area === 'outcomes' && !itemId && method === 'GET') { await need('results.read'); return json(await listOutcomes(env, ws)); }
+  return json({ error: 'not found' }, 404);
+}
+
+// Round 2: Send to AI, Bring back from AI, drafts, approval, Mark as posted.
+async function handleCreate(request: Request, env: Env, path: string): Promise<Response | null> {
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/(ai-providers|drafts|records)(?:\/([^/]+)(?:\/(prompt|edit|approve|posted|media))?)?$/);
+  if (!m) return null;
+  const [, rawWs, area, rawId, action] = m;
+  if (area === 'records' && action !== 'prompt') return null; // other record routes are handled by handleIntel
+  const ws = decodeURIComponent(rawWs), id = rawId ? decodeURIComponent(rawId) : '';
+  const method = request.method;
+  const body = method === 'POST' ? await request.json().catch(() => ({})) : null;
+  const need = (perm: Parameters<typeof requireWorkspace>[3]) => requireWorkspace(request, env, ws, perm);
+
+  if (area === 'ai-providers' && !id && method === 'GET') { const { email } = await need('today.read'); return json(await listProviders(env, ws, email)); }
+  if (area === 'ai-providers' && !id && method === 'POST') { const { email } = await need('channels.connect'); return json(await addProvider(env, ws, email, body), 201); }
+  if (area === 'records' && action === 'prompt' && method === 'POST') { const { email, membership } = await need('content.create'); return json(await preparePrompt(env, membership, id, email, body)); }
+  if (area === 'drafts' && !id && method === 'GET') { await need('today.read'); return json(await listDrafts(env, ws, new URL(request.url).searchParams.get('record'))); }
+  if (area === 'drafts' && !id && method === 'POST') { const { email } = await need('content.create'); return json(await createDraft(env, ws, email, body), 201); }
+  if (area === 'drafts' && id && action === 'edit' && method === 'POST') { await need('content.create'); return json(await editDraft(env, ws, id, body)); }
+  if (area === 'drafts' && id && action === 'approve' && method === 'POST') { const { email } = await need('content.approve'); return json(await approveDraft(env, ws, id, email, body)); }
+  if (area === 'drafts' && id && action === 'posted' && method === 'POST') { const { email } = await need('content.publish'); return json(await markPosted(env, ws, id, email, body)); }
+  if (area === 'drafts' && id && action === 'media' && method === 'PUT') { await need('content.create'); return json(await putMedia(env, ws, id, request)); }
+  if (area === 'drafts' && id && action === 'media' && method === 'GET') { await need('today.read'); return getMedia(env, ws, id); }
   return json({ error: 'not found' }, 404);
 }

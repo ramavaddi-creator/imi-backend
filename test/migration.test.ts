@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { makeD1, SCHEMAS } from './helpers/d1.ts';
 import { createWorker } from '../src/index.ts';
 
-const BEFORE = SCHEMAS.filter((f) => !['schema_v8.sql', 'schema_v9.sql', 'schema_v10.sql'].includes(f)); // live may not have v8 yet
+const BEFORE = SCHEMAS.filter((f) => !['schema_v8.sql', 'schema_v9.sql', 'schema_v10.sql', 'schema_v11.sql'].includes(f)); // live may not have v8 yet
 const IDDAV = 'iddav-marketing-intelligence';
 
 function liveShaped() {
