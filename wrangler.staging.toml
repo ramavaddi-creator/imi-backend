@@ -43,12 +43,11 @@ service = "iddav-crm-staging"
 [vars]
 # Both values appear when you enable Cloudflare Access on the workers.dev address.
 # Until both are set, every private request returns 503 (fail closed).
-ACCESS_TEAM_DOMAIN = ""
-ACCESS_AUD = ""
+ACCESS_TEAM_DOMAIN = "still-firefly-2569.cloudflareaccess.com"
+ACCESS_AUD = "dd214af24c746cd37d4cc7b774058895e28e53066f996698918bea2f6f564cea"
 # Your email, lower case. Owner of everything in the old /api routes.
-OWNER_EMAILS = ""
 # The staging address itself, once known (same origin as the app).
-APP_URL = ""
+APP_URL = "https://imi-one-staging.ramavaddi.workers.dev"
 ENQUIRY_ORIGINS = ""
 # Used only for the request path; the call goes through CRM_SERVICE.
 CRM_URL = "https://iddav-crm-staging.internal"
