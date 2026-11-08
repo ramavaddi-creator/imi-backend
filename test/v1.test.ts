@@ -149,7 +149,7 @@ test('M1: if the CRM is down, Today still loads and says so instead of guessing'
 });
 
 test('the permission matrix: only owners approve, publish, connect, see margins or manage members', () => {
-  for (const p of ['content.approve', 'content.publish', 'channels.connect', 'margin.read', 'members.manage'] as const) {
+  for (const p of ['content.approve', 'content.publish', 'channels.connect', 'margin.read', 'members.manage', 'decide'] as const) {
     assert.deepEqual(Object.entries(ROLE_PERMS).filter(([, ps]) => ps.includes(p)).map(([r]) => r), ['owner'], p);
   }
   assert.ok(can('sales', 'today.read') && !can('sales', 'money.read') && !can('creator', 'results.read'));

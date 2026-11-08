@@ -14,6 +14,7 @@ import { verifiedEmail } from './policy';
 import { membershipsOf, requireWorkspace, type Membership } from './tenancy';
 import { crmFetch, crmMode } from './crm_bridge';
 import { contentHash } from './studio';
+import { feeds, parseProfile, listInbox, captureInbox, setInboxStatus, promoteInbox, listRecords, decisionHistory, decideOnRecord, listOutcomes } from './intel';
 
 const GOALS: Record<string, { label: string; phrase: string }> = {
   qualified_enquiries: { label: 'Enquiries from posts', phrase: '{n} people enquired from your posts' },
@@ -35,8 +36,10 @@ const toWorkspace = (m: Membership) => ({
 
 export async function handleV1(request: Request, env: Env, path: string): Promise<Response | null> {
   if (!path.startsWith('/v1/')) return null;
-  if (request.method !== 'GET') return json({ error: 'not found' }, 404);
   try {
+    const intel = await handleIntel(request, env, path);
+    if (intel) return intel;
+    if (request.method !== 'GET') return json({ error: 'not found' }, 404);
     if (path === '/v1/me') {
       const email = verifiedEmail(request);
       if (!email) throw new HttpError(401, 'Sign in through Cloudflare Access first.');
@@ -130,4 +133,41 @@ async function goal(env: Env, ws: Membership) {
   } catch {
     return { value: null, previous: null, trust: { kind: 'unavailable', source, detail: 'The CRM could not be reached. Try again in a minute.' } };
   }
+}
+
+// Round 1: the intelligence loop. Reading needs today.read (or results.read for
+// outcomes); capturing and triage need content.create; deciding needs decide (owners).
+// Brand settings (record domain, feed profile) come from the workspaces table, never the request.
+async function handleIntel(request: Request, env: Env, path: string): Promise<Response | null> {
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/(feed|inbox|records|outcomes)(?:\/([^/]+)(?:\/(status|promote|decision|decisions))?)?$/);
+  if (!m) return null;
+  const [, rawWs, area, rawItem, action] = m;
+  const ws = decodeURIComponent(rawWs);
+  const itemId = rawItem ? decodeURIComponent(rawItem) : '';
+  const method = request.method;
+  const body = method === 'POST' ? await request.json().catch(() => ({})) : null;
+  const need = async (perm: Parameters<typeof requireWorkspace>[3]) => {
+    const r = await requireWorkspace(request, env, ws, perm);
+    return { ...r, info: { id: ws, domain: r.membership.record_domain || ws } };
+  };
+
+  if (area === 'feed' && method === 'GET' && !itemId) {
+    const { membership } = await need('today.read');
+    return json(await feeds(new URL(request.url).searchParams.get('q') ?? '', parseProfile(membership.feed_profile_json)));
+  }
+  if (area === 'inbox' && !itemId && method === 'GET') { await need('today.read'); return json(await listInbox(env, ws, new URL(request.url).searchParams.get('status'))); }
+  if (area === 'inbox' && !itemId && method === 'POST') { const { email, info } = await need('content.create'); const r = await captureInbox(env, info, email, body); return json(r, r.duplicate ? 200 : 201); }
+  if (area === 'inbox' && itemId && action === 'status' && method === 'POST') {
+    await need('content.create'); await setInboxStatus(env, ws, itemId, String((body as any)?.status ?? '')); return json({ ok: true });
+  }
+  if (area === 'inbox' && itemId && action === 'promote' && method === 'POST') {
+    const { email, info } = await need('content.create'); const r = await promoteInbox(env, info, itemId, email); return json(r, r.existing ? 200 : 201);
+  }
+  if (area === 'records' && !itemId && method === 'GET') { await need('today.read'); return json(await listRecords(env, ws)); }
+  if (area === 'records' && itemId && action === 'decisions' && method === 'GET') { await need('today.read'); return json(await decisionHistory(env, ws, itemId)); }
+  if (area === 'records' && itemId && action === 'decision' && method === 'POST') {
+    const { email, info } = await need('decide'); const r = await decideOnRecord(env, info, itemId, email, body); return json(r, r.replayed ? 200 : 201);
+  }
+  if (area === 'outcomes' && !itemId && method === 'GET') { await need('results.read'); return json(await listOutcomes(env, ws)); }
+  return json({ error: 'not found' }, 404);
 }
