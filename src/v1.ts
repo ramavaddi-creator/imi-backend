@@ -14,6 +14,7 @@ import { verifiedEmail } from './policy';
 import { membershipsOf, requireWorkspace, type Membership } from './tenancy';
 import { crmFetch, crmMode } from './crm_bridge';
 import { contentHash } from './studio';
+import { usage as aiUsage, setBudget as setAiBudget } from './aibudget';
 import { listMembers, addMember, changeRole, revokeMember, listFacts, addFact, retireFact, updateProfile, getProfile, toggleProvider, activity } from './admin';
 import { listProviders, addProvider, preparePrompt, createDraft, listDrafts, editDraft, approveDraft, markPosted, putMedia, getMedia, scheduleDraft, calendar, recordOutcome } from './create';
 import { feeds, parseProfile, listInbox, captureInbox, setInboxStatus, promoteInbox, listRecords, decisionHistory, decideOnRecord, listOutcomes } from './intel';
@@ -111,6 +112,12 @@ async function today(env: Env, ws: Membership) {
   for (const d of ripe ?? []) {
     needsYou.push({ id: `results-${d.id}`, kind: 'review_learning', subject: d.headline, title: d.headline,
       why: 'Results are in? Record what happened, so IMI ONE can learn.', action: { label: 'Record results', screen: 'create', ref: d.id } });
+  }
+  // AI spending near or over this month's budget (round 5).
+  const ai = await aiUsage(env, id);
+  if (ai.warning) {
+    needsYou.unshift({ id: 'ai-budget', kind: 'ai_budget', subject: `${ai.spentInr} / ${ai.monthlyCapInr}`, title: 'AI spending is close to this month\'s budget',
+      why: 'New AI requests stop when the budget is reached.', action: { label: 'Review the AI budget', screen: 'admin', ref: 'ai' } });
   }
   // Records waiting for a decision (decisions are made on the record itself).
   const { results: open } = await env.DB.prepare(
@@ -242,7 +249,7 @@ async function upcoming(env: Env, ws: string) {
 
 // Round 4: Brand settings. Reading facts and the profile is open to members; changes are owners only.
 async function handleAdmin(request: Request, env: Env, path: string): Promise<Response | null> {
-  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/(members|brand-facts|profile|activity|ai-providers)(?:\/([^/]+)(?:\/(role|revoke|retire|toggle))?)?$/);
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/(members|brand-facts|profile|activity|ai-providers|ai-budget)(?:\/([^/]+)(?:\/(role|revoke|retire|toggle))?)?$/);
   if (!m) return null;
   const [, rawWs, area, rawId, action] = m;
   if (area === 'ai-providers' && action !== 'toggle') return null; // listing and adding are in handleCreate
@@ -262,5 +269,7 @@ async function handleAdmin(request: Request, env: Env, path: string): Promise<Re
   if (area === 'profile' && !id && method === 'POST') { await need('members.manage'); return json(await updateProfile(env, ws, body)); }
   if (area === 'ai-providers' && id && action === 'toggle' && method === 'POST') { await need('channels.connect'); return json(await toggleProvider(env, ws, id, body)); }
   if (area === 'activity' && !id && method === 'GET') { await need('members.manage'); return json(await activity(env, ws)); }
+  if (area === 'ai-budget' && !id && method === 'GET') { await need('members.manage'); return json(await aiUsage(env, ws)); }
+  if (area === 'ai-budget' && !id && method === 'POST') { const { email } = await need('members.manage'); return json(await setAiBudget(env, ws, email, body)); }
   return json({ error: 'not found' }, 404);
 }

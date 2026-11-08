@@ -4,6 +4,7 @@ import type { Env } from './env';
 import { json, CORS_HEADERS, HttpError, errMsg, actor } from './http';
 import { gate, applyCors, requireOwner, verifiedEmail, isOwner } from './policy';
 import { handleV1 } from './v1';
+import { aiGate, aiRecordEstimate, legacyWorkspace } from './aibudget';
 import { handleStudioRoutes, serveMedia } from './studio';
 import { handleConnectionRoutes, handleOAuthCallback } from './connections';
 import { handleCrmRoutes, handlePublicEnquiry } from './crm';
@@ -327,6 +328,11 @@ async function route(request: Request, env: Env): Promise<Response> {
       if (provider !== 'claude' && provider !== 'chatgpt') return json({ error: 'provider must be "claude" or "chatgpt"' }, 400);
 
       const prompt = `You are helping polish a short piece of operational/field-observation text for a wildlife tourism business (Iddav WildStay / Sri Antra, near Tadoba Tiger Reserve, India). Improve clarity, fix grammar and typos, and remove or soften any inappropriate or unprofessional language. Preserve the original meaning and roughly the same length -- do not invent new facts, claims, or details that weren't in the original. Return ONLY the improved text, with no preamble, no quotation marks, and no explanation.\n\nOriginal text:\n${text}`;
+
+      // AI spending controls (round 5): this route used to call the AI with no limit.
+      const gateWs = legacyWorkspace(env), gateProvider = provider === 'claude' ? 'anthropic' : 'openai';
+      const { estimateInr } = await aiGate(env, { workspace: gateWs, provider: gateProvider, kind: 'text', user: verifiedEmail(request) });
+      await aiRecordEstimate(env, { workspace: gateWs, provider: gateProvider, kind: 'text', task: 'assist', estimateInr, user: verifiedEmail(request), ok: true });
 
       if (provider === 'claude') {
         if (!env.ANTHROPIC_API_KEY) return json({ error: 'Claude is not configured on this backend' }, 400);

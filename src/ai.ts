@@ -3,6 +3,7 @@
 // version, model, parameters, tokens, latency and outcome (TFR-AI-003,
 // CIL-NFR-007) and is subject to a monthly cap (NFR-014, CILA-AT-23).
 
+import { aiGate, costInr, getBudget, legacyWorkspace, type AiProviderKey } from './aibudget';
 import type { Env } from './env';
 import { getConn } from './connections';
 import { now, errMsg, HttpError } from './http';
@@ -12,6 +13,8 @@ export type CopyProvider = 'claude' | 'chatgpt';
 export const COPY_PROMPT_VERSION = 'imi-copy-1.0 (2026-11-05)';
 export const IMAGE_PROMPT_VERSION = 'imi-atmosphere-1.0 (2026-11-05)';
 
+const providerKey = (p: string): AiProviderKey => (/claude|anthropic/i.test(p) ? 'anthropic' : 'openai');
+
 async function apiKey(env: Env, provider: CopyProvider): Promise<string> {
   const c = await getConn(env, provider).catch(() => null);
   const k = c?.secrets.apiKey || (provider === 'claude' ? env.ANTHROPIC_API_KEY : env.OPENAI_API_KEY);
@@ -19,7 +22,8 @@ async function apiKey(env: Env, provider: CopyProvider): Promise<string> {
   return k;
 }
 
-async function enforceCap(env: Env, kind: 'text' | 'image') {
+async function enforceCap(env: Env, kind: 'text' | 'image', provider: AiProviderKey = kind === 'image' ? 'openai' : 'anthropic') {
+  await aiGate(env, { workspace: legacyWorkspace(env), provider, kind });
   const cap = Number(kind === 'image' ? env.AI_MONTHLY_IMAGE_CAP || 60 : env.AI_MONTHLY_TEXT_CAP || 600);
   const month = now().slice(0, 7);
   const row = await env.DB.prepare(
@@ -38,12 +42,13 @@ async function logCall(env: Env, rec: {
   const id = crypto.randomUUID();
   await env.DB.prepare(
     `INSERT INTO ai_calls (id, kind, task, provider, model, prompt_version, params_json, input_tokens, output_tokens, images,
-       latency_ms, status, error, entity_type, entity_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       latency_ms, status, error, entity_type, entity_id, created_at, workspace_id, cost_inr)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     id, rec.kind, rec.task, rec.provider, rec.model, rec.promptVersion, JSON.stringify(rec.params ?? {}),
     rec.inputTokens ?? null, rec.outputTokens ?? null, rec.images ?? null, rec.latencyMs, rec.status,
-    rec.error ?? null, rec.entityType ?? null, rec.entityId ?? null, now()
+    rec.error ?? null, rec.entityType ?? null, rec.entityId ?? null, now(), legacyWorkspace(env),
+    costInr((await getBudget(env, legacyWorkspace(env))).prices, providerKey(rec.provider), rec)
   ).run();
   return id;
 }
@@ -136,8 +141,9 @@ function parseJsonLoose(text: string): any {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
+export { logCall as recordAiCall };
 export async function generateCopy(env: Env, r: CopyRequest, entityId: string): Promise<CopyResult> {
-  await enforceCap(env, 'text');
+  await enforceCap(env, 'text', providerKey(r.provider));
   const key = await apiKey(env, r.provider);
   const { system, user } = buildPrompt(r);
   const model = r.provider === 'claude' ? env.ANTHROPIC_MODEL || 'claude-sonnet-5-5' : env.OPENAI_TEXT_MODEL || 'gpt-4o-mini';
@@ -279,7 +285,7 @@ const TOOL_STYLE: Record<string, string> = {
 export async function generateCreativeBrief(env: Env, r: {
   provider: CopyProvider; tool: string; kind: 'video' | 'image' | 'design'; content: any; campaign: any; evidence: EvidenceItem[];
 }): Promise<{ prompt: string; aiCallId: string; model: string }> {
-  await enforceCap(env, 'text');
+  await enforceCap(env, 'text', providerKey(r.provider));
   const key = await apiKey(env, r.provider);
   const model = r.provider === 'claude' ? env.ANTHROPIC_MODEL || 'claude-sonnet-5-5' : env.OPENAI_TEXT_MODEL || 'gpt-4o-mini';
   const system = `You write production prompts for outside creative tools for Iddav WildStay (Sri Antra eco-lodge, Tadoba buffer zone, India). Mood: National Geographic + Leica + Aman; quiet, observant, premium.
