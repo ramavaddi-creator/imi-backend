@@ -461,3 +461,9 @@ test('SEC: live publishing is refused unless the environment explicitly enables 
   assert.equal(res.status, 403);
   assert.match(((await res.json()) as any).error, /switched off/);
 });
+
+test('the team domain is accepted as Cloudflare shows it, with https:// and a trailing slash', async () => {
+  assert.equal(accessConfigValid({ teamDomain: `https://${TEAM}/`, aud: AUD }), true);
+  assert.equal(await verifyAccessJwt(await token(), { teamDomain: `https://${TEAM}`, aud: AUD }), OWNER);
+  assert.equal(accessConfigValid({ teamDomain: 'https://evil.example.com', aud: AUD }), false);
+});

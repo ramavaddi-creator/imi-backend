@@ -12,7 +12,7 @@ import type { Env } from './env';
 import { HttpError, json } from './http';
 import { verifiedEmail } from './policy';
 import { membershipsOf, requireWorkspace, type Membership } from './tenancy';
-import { crmMode } from './crm_bridge';
+import { crmFetch, crmMode } from './crm_bridge';
 import { contentHash } from './studio';
 
 const GOALS: Record<string, { label: string; phrase: string }> = {
@@ -118,7 +118,7 @@ async function goal(env: Env, ws: Membership) {
   const sum = async (since: number) => {
     const url = new URL('/integrations/imi/outcomes', env.CRM_URL);
     url.searchParams.set('since', new Date(since).toISOString());
-    const res = await fetch(url.toString(), { headers: { 'x-imi-feed-key': env.CRM_SERVICE_KEY! }, signal: AbortSignal.timeout(8000) });
+    const res = await crmFetch(env, url.toString(), { headers: { 'x-imi-feed-key': env.CRM_SERVICE_KEY! }, signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new HttpError(502, `The CRM answered ${res.status}.`);
     const body = (await res.json().catch(() => null)) as { imi_campaigns?: { code: string; enquiries: number }[] } | null;
     if (!body || !Array.isArray(body.imi_campaigns)) throw new HttpError(502, 'The CRM answered in a form IMI does not recognise.');

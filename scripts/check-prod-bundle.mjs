@@ -10,6 +10,9 @@ const MARKER = 'IMI-LOCAL-DEVELOPMENT-ENTRY-POINT';
 let failed = false;
 const fail = (m) => { console.error('FAIL', m); failed = true; };
 
+import { mkdirSync } from 'node:fs';
+mkdirSync('staging-web', { recursive: true }); // the staging config serves the built web app from here
+
 const bundle = (cfg) => {
   const out = mkdtempSync(join(tmpdir(), 'imi-bundle-'));
   execFileSync('npx', ['wrangler', 'deploy', '--dry-run', '-c', cfg, '--outdir', out], { stdio: 'pipe' });

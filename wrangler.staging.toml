@@ -1,12 +1,29 @@
-# STAGING: fully isolated from production. Separate Worker, database, media
-# bucket and credentials; synthetic data only; live publishing off.
-# Deploy only with founder approval:  npx wrangler deploy -c wrangler.staging.toml
-name = "imi-backend-staging"
+# IMI ONE STAGING. Fully isolated from production: its own Worker, database,
+# file bucket, secrets and Access protection. Synthetic data only. Live
+# publishing is off (PUBLISHING_ENABLED is never set here).
+#
+# One address serves both the IMI ONE web app and its API, so the Access sign-in
+# cookie works without cross-site setup:
+#   https://imi-one-staging.<your-subdomain>.workers.dev
+#
+# Deploy only with founder approval:
+#   ./scripts/stage-web.sh ../imi-one-web     (builds the app into ./staging-web)
+#   npx wrangler deploy -c wrangler.staging.toml
+name = "imi-one-staging"
 main = "src/index.ts"
 compatibility_date = "2026-07-17"
-# Reachable only through the staging custom domain behind its own Access app.
-workers_dev = false
+
+# The workers.dev address IS the staging address. It must have Cloudflare Access
+# switched on (Settings > Domains & Routes > workers.dev > Enable Cloudflare Access)
+# BEFORE the first real use; the Worker also refuses private requests without a
+# verified Access identity. Preview URLs stay off so there is exactly one address.
+workers_dev = true
 preview_urls = false
+
+# The built IMI ONE web app. Files are served as they are; every other path
+# (/api, /v1, /oauth, /media, /public) runs the Worker.
+[assets]
+directory = "./staging-web"
 
 [[d1_databases]]
 binding = "DB"
@@ -18,14 +35,26 @@ database_id = "00000000-0000-0000-0000-000000000000"
 binding = "POSTERS"
 bucket_name = "imi-posters-staging"
 
+# Private Worker-to-Worker link to the staging CRM (never over the internet).
+[[services]]
+binding = "CRM_SERVICE"
+service = "iddav-crm-staging"
+
 [vars]
-# Fill in after creating the staging Access application. Until both are set,
-# every private request returns 503 (fail closed).
+# Both values appear when you enable Cloudflare Access on the workers.dev address.
+# Until both are set, every private request returns 503 (fail closed).
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+# Your email, lower case. Owner of everything in the old /api routes.
 OWNER_EMAILS = ""
+# The staging address itself, once known (same origin as the app).
 APP_URL = ""
 ENQUIRY_ORIGINS = ""
+# Used only for the request path; the call goes through CRM_SERVICE.
+CRM_URL = "https://iddav-crm-staging.internal"
 DATA_ENVIRONMENT = "staging"
-# PUBLISHING_ENABLED is deliberately absent: staging can never post for real.
-# No CRM_URL, no platform client IDs, no AI keys: staging uses none of production's credentials.
+# Secrets (set with: npx wrangler secret put NAME -c wrangler.staging.toml):
+#   CRM_SERVICE_KEY  = the staging CRM's IMI_FEED_KEY (new random value, never production's)
+#   OWNER_PIN        = a new staging PIN
+#   CONNECTIONS_KEY  = new random value (encrypts stored platform tokens)
+# No platform client IDs, no AI keys: staging uses none of production's credentials.

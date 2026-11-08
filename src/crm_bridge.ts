@@ -7,6 +7,10 @@ import { HttpError } from './http';
 
 export const crmMode = (env: Env): boolean => !!(env.CRM_URL && env.CRM_SERVICE_KEY);
 
+// Calls the CRM: through the private service binding when one is configured, otherwise over HTTPS.
+export const crmFetch = (env: Env, url: string, init: RequestInit, fetchImpl: typeof fetch = fetch): Promise<Response> =>
+  env.CRM_SERVICE ? env.CRM_SERVICE.fetch(url, init) : fetchImpl(url, init);
+
 export const crmReadOnlyMessage = (env: Env): string =>
   `Enquiries are kept in the Iddav CRM now, not in IMI.${env.CRM_URL ? ` Open ${env.CRM_URL} to add or change one.` : ''} IMI shows the results.`;
 
@@ -24,7 +28,7 @@ export async function fetchCrmCampaign(env: Env, code: string, since?: string | 
   url.searchParams.set('campaign', code);
   if (since) url.searchParams.set('since', since);
   let res: Response;
-  try { res = await fetchImpl(url.toString(), { headers: { 'x-imi-feed-key': env.CRM_SERVICE_KEY! }, signal: AbortSignal.timeout(8000) }); }
+  try { res = await crmFetch(env, url.toString(), { headers: { 'x-imi-feed-key': env.CRM_SERVICE_KEY! }, signal: AbortSignal.timeout(8000) }, fetchImpl); }
   catch { throw new HttpError(502, 'The CRM could not be reached. Try again in a minute.'); }
   if (res.status === 401) throw new HttpError(502, "The CRM rejected IMI's feed key. CRM_SERVICE_KEY here must equal IMI_FEED_KEY on the CRM.");
   if (!res.ok) throw new HttpError(502, `The CRM answered ${res.status}.`);

@@ -25,7 +25,12 @@ const CLOCK_SKEW_SEC = 30;
 
 // True only when both values are present and well-formed. Protected routes
 // refuse to run when this is false (fail closed).
+// Cloudflare's setup screen shows the team domain as https://<team>.cloudflareaccess.com;
+// accept it with or without the scheme and a trailing slash.
+export const normaliseTeamDomain = (d?: string) => (typeof d === 'string' ? d.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '') : d);
+
 export function accessConfigValid(cfg: AccessConfig): boolean {
+  cfg = { ...cfg, teamDomain: normaliseTeamDomain(cfg.teamDomain) };
   return typeof cfg.teamDomain === 'string' && TEAM_DOMAIN_RE.test(cfg.teamDomain)
     && typeof cfg.aud === 'string' && AUD_RE.test(cfg.aud);
 }
@@ -75,6 +80,7 @@ export async function verifyAccessJwt(
   nowSec: number = Math.floor(Date.now() / 1000),
 ): Promise<string | null> {
   try {
+    cfg = { ...cfg, teamDomain: normaliseTeamDomain(cfg.teamDomain) };
     if (!token || token.length > MAX_TOKEN_LENGTH || !accessConfigValid(cfg)) return null;
     const parts = token.split('.');
     if (parts.length !== 3 || parts.some((p) => !p)) return null;

@@ -5,3 +5,4 @@ node_modules/
 backups/
 hard_delete_cases.sql
 timetravel-before-v4.txt
+staging-web/

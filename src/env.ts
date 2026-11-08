@@ -29,6 +29,10 @@ export interface Env {
   PUBLISHING_ENABLED?: string;
   // 'production' only in the production config. Anything else is labelled staging in the app.
   DATA_ENVIRONMENT?: string;
+  // Optional service binding to the CRM Worker. When present, IMI calls the CRM
+  // privately, Worker to Worker, never over the public internet (so a CRM behind
+  // Cloudflare Access is still reachable). CRM_URL is then only used for the path.
+  CRM_SERVICE?: { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> };
 
   // The Iddav CRM: the one place enquiries, quotes and bookings live (DEC-IMI-003). IMI reads campaign results from it.
   // CRM_SERVICE_KEY must equal INTAKE_KEY on the CRM Worker. Set it with `wrangler secret put CRM_SERVICE_KEY`.

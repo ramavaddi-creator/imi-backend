@@ -159,3 +159,30 @@ test('production is labelled production only when the config says so', async () 
   const me = await body(await as(OWNER, world({ DATA_ENVIRONMENT: 'production' }), '/v1/me'));
   assert.equal(me.data.environment, 'production');
 });
+
+test('with a private service binding to the CRM, the goal is read through it, not over the internet', async () => {
+  const via: string[] = [];
+  const env = world({
+    CRM_URL: 'https://iddav-crm-staging.internal', CRM_SERVICE_KEY: 'feed-key',
+    CRM_SERVICE: { fetch: async (u: string, init?: RequestInit) => {
+      via.push(new Headers(init?.headers).get('x-imi-feed-key') ?? '');
+      return new Response(JSON.stringify({ imi_campaigns: [{ code: 'CMP-0101', enquiries: 3 }] }));
+    } },
+  });
+  crm = async () => { throw new Error('the public internet must not be used'); };
+  const t = await body(await as(OWNER, env, '/v1/workspaces/ws-iddav/today'));
+  crm = null;
+  assert.equal(t.data.goal.value, 3);
+  assert.deepEqual(via, ['feed-key', 'feed-key']);
+});
+
+test('the staging seed loads on top of schema_v9 and keeps the two brands apart', async () => {
+  const { readFileSync } = await import('node:fs');
+  const env = world();
+  env.DB.raw.exec(readFileSync('seed_staging.sql', 'utf8'));
+  env.DB.raw.prepare("INSERT INTO memberships (id, tenant_id, workspace_id, email, role, created_by, created_at) VALUES ('m-ad-owner','tnt-rama','ws-antardrishti',?, 'owner','setup','2026-11-08')").run(OWNER);
+  const iddav = JSON.stringify((await body(await as(OWNER, env, '/v1/workspaces/ws-iddav/today'))).data);
+  const ad = JSON.stringify((await body(await as(OWNER, env, '/v1/workspaces/ws-antardrishti/today'))).data);
+  assert.ok(iddav.includes('SAMPLE Why do tigers') && !iddav.includes('ANTARDRISHTI-ONLY'));
+  assert.ok(ad.includes('ANTARDRISHTI-ONLY') && !ad.includes('SAMPLE Why do tigers'));
+});
