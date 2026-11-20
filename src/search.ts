@@ -57,7 +57,9 @@ export const MANUAL_METRICS: Record<string, string> = {
 
 // Tags on IMI campaign links that mean Google (GB = Google Business post; utm_source google / google_ads).
 const GOOGLE_TAGS = new Set(['GB', 'GOOGLE', 'GOOGLE_ADS', 'GOOGLE_BUSINESS', 'GSC', 'ORGANIC']);
+// The CRM's stages (iddav-crm): new, contacted, qualified, quote_sent, follow_up, booked, stay_completed, review_referral, lost.
 const BOOKED_STATUSES = new Set(['booked', 'stay_completed', 'review_referral']);
+const QUOTED_STATUSES = new Set(['quote_sent', 'follow_up']);
 
 // ---------- small utilities ----------
 
@@ -568,14 +570,14 @@ export async function funnel(env: Env, ws: string, role: Role, daysRaw: string |
       const st = Array.isArray(pipe?.stages) ? pipe.stages : [];
       const total = st.reduce((n: number, x: any) => n + (Number(x.n) || 0), 0);
       const booked = st.filter((x: any) => BOOKED_STATUSES.has(x.status)).reduce((n: number, x: any) => n + (Number(x.n) || 0), 0);
-      const quoted = st.filter((x: any) => x.status === 'quoted').reduce((n: number, x: any) => n + (Number(x.n) || 0), 0);
+      const quoted = st.filter((x: any) => QUOTED_STATUSES.has(x.status)).reduce((n: number, x: any) => n + (Number(x.n) || 0), 0);
       const retrievedAt = iso();
       stages.push({ key: 'enquiries', label: 'Enquiries', source: 'Iddav CRM', kind: 'crm', status: 'measured', value: total, retrievedAt,
         attribution: { attributedGoogle: g.enquiries, attributedOther: Math.max(0, any.enquiries - g.enquiries), unattributed: Math.max(0, total - any.enquiries),
           unknown: 'Phone calls and walk-ins that were never entered in the CRM cannot be counted.' },
         detail: 'Every enquiry recorded in the CRM in this period. "From Google" means it carried a Google-tagged IMI link or code.' });
       stages.push({ key: 'quotes', label: 'Quotes waiting or booked', source: 'Iddav CRM', kind: 'crm', status: 'measured', value: quoted + booked, retrievedAt,
-        detail: 'Enquiries now at Quoted or further along. An enquiry that was quoted and then lost is not included.' });
+        detail: 'Enquiries now at Quote sent, Follow-up or booked. An enquiry that was quoted and then lost is not included.' });
       stages.push({ key: 'bookings', label: 'Confirmed bookings', source: 'Iddav CRM', kind: 'crm', status: 'measured', value: booked, retrievedAt,
         attribution: { attributedGoogle: g.booked, unattributedOrOther: Math.max(0, booked - g.booked) }, detail: 'Booked, stayed or reviewed, from enquiries made in this period.' });
       if (can(role, 'money.read') && pipe?.money) {

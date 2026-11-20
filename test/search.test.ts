@@ -77,7 +77,7 @@ function world(extra: Record<string, unknown> = {}) {
     const h = new Headers(init?.headers); const path = new URL(u).pathname; crmSeen.push(`${path}|${h.get('x-imi-scope') ?? ''}`);
     if (path === '/integrations/imi/pipeline') {
       const sc = (h.get('x-imi-scope') ?? '').split(',');
-      return new Response(JSON.stringify({ stages: [{ status: 'new', n: 6 }, { status: 'quoted', n: 3 }, { status: 'booked', n: 2 }, { status: 'stay_completed', n: 1 }, { status: 'lost', n: 2 }],
+      return new Response(JSON.stringify({ stages: [{ status: 'new', n: 6 }, { status: 'quote_sent', n: 2 }, { status: 'follow_up', n: 1 }, { status: 'booked', n: 2 }, { status: 'stay_completed', n: 1 }, { status: 'lost', n: 2 }],
         open: [], ...(sc.includes('money') ? { money: { booked_value: 54000, received: 20000 } } : {}), ...(sc.includes('margin') ? { margin } : {}) }));
     }
     return new Response(JSON.stringify({ imi_campaigns: [
