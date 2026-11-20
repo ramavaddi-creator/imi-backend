@@ -6,6 +6,7 @@ import { HttpError } from './http';
 import type { Membership } from './tenancy';
 import { allocCode } from './intel';
 import { factLines } from './admin';
+import { draftChecks } from './engine';
 
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 const clip = (s: unknown, n: number) => (typeof s === 'string' ? s.trim().slice(0, n) : '');
@@ -138,7 +139,7 @@ export async function listDrafts(env: Env, ws: string, recordId: string | null) 
   const { results } = await env.DB.prepare(
     `SELECT d.id, d.record_id, r.code AS record_code, d.headline, d.caption, d.format, d.source, d.media_type, d.ai_generated_media, d.version, d.status,
        d.created_by, d.created_at, d.updated_at, d.approved_by, d.approved_at, d.posted_url, d.posted_channel, d.posted_at, (d.media_key IS NOT NULL) AS has_media,
-       d.scheduled_for, d.scheduled_channel, (SELECT o.code FROM outcome_items o WHERE o.draft_id = d.id) AS outcome_code
+       d.scheduled_for, d.scheduled_channel, (SELECT o.code FROM outcome_items o WHERE o.draft_id = d.id) AS outcome_code, d.pack_id, d.brand_kit_version_id, d.format_template_version_id
      FROM drafts d LEFT JOIN intelligence_records r ON r.id = d.record_id
      WHERE d.workspace_id = ? ${recordId ? 'AND d.record_id = ?' : ''} ORDER BY d.updated_at DESC LIMIT 100`).bind(...(recordId ? [ws, recordId] : [ws])).all<any>();
   return (results ?? []).map((d) => ({ ...d, ai_generated_media: !!d.ai_generated_media, has_media: !!d.has_media }));
@@ -165,7 +166,13 @@ export async function approveDraft(env: Env, ws: string, id: string, who: string
   const v = Number(body?.version);
   if (v !== d.version) throw new HttpError(409, 'The draft changed since you opened it. Review the new version.');
   if (d.status !== 'draft') return { id, status: d.status, version: d.version };
-  const r = await env.DB.prepare("UPDATE drafts SET status = 'approved', approved_by = ?, approved_at = ?, approved_version = version WHERE id = ? AND workspace_id = ? AND status = 'draft' AND version = ?")
+  // Round 11: a listed wrong form of a Brand Fact blocks approval until the text is fixed (design C2).
+  const blocking = (await draftChecks(env, ws, d)).filter((c) => c.level === 'block');
+  if (blocking.length) throw new HttpError(409, `Fix this before approving: ${blocking.map((c) => c.message).join(' ')}`);
+  // The approval records the exact Brand Kit and template versions the draft was made under (design C9).
+  const r = await env.DB.prepare(`UPDATE drafts SET status = 'approved', approved_by = ?, approved_at = ?, approved_version = version,
+      approved_kit_version_id = brand_kit_version_id, approved_template_version_id = format_template_version_id
+    WHERE id = ? AND workspace_id = ? AND status = 'draft' AND version = ?`)
     .bind(who, now(), id, ws, v).run();
   if (!(r as any).meta?.changes) throw new HttpError(409, 'The draft changed since you opened it.');
   return { id, status: 'approved', version: v, approvedBy: who };

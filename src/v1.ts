@@ -22,6 +22,7 @@ import { listProviders, addProvider, preparePrompt, createDraft, listDrafts, edi
 import { parseConnector, listConnections, updateConnection, oauthStart, runSync, disconnect, listRuns, addManual, listManual, funnel, rotateKeys, needsAttention } from './search';
 import { isOwner } from './policy';
 import * as ig from './instagram';
+import * as engine from './engine';
 import { feeds, parseProfile, listInbox, captureInbox, setInboxStatus, promoteInbox, listRecords, decisionHistory, decideOnRecord, listOutcomes } from './intel';
 
 const GOALS: Record<string, { label: string; phrase: string }> = {
@@ -55,6 +56,8 @@ export async function handleV1(request: Request, env: Env, path: string): Promis
     if (search) return search;
     const social = await handleSocial(request, env, path);
     if (social) return social;
+    const eng = await handleEngine(request, env, path);
+    if (eng) return eng;
     if (request.method !== 'GET') return json({ error: 'not found' }, 404);
     if (path === '/v1/me') {
       const email = verifiedEmail(request);
@@ -366,5 +369,31 @@ async function handleSocial(request: Request, env: Env, path: string): Promise<R
   if (action === 'sync') return json(await ig.runSync(env, ws, 'manual', email));
   if (action === 'test') return json(await ig.connectionTest(env, ws));
   if (action === 'disconnect') return json(await ig.disconnect(env, ws));
+  return json({ error: 'not found' }, 404);
+}
+
+// Round 11: Build 4, the Content Engine. Reading needs today.read; making packs needs content.create;
+// changing the Brand Kit is an owner action (members.manage); scheduling from a plan needs content.publish.
+async function handleEngine(request: Request, env: Env, path: string): Promise<Response | null> {
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/(brand-kit|packs)(?:\/([^/]+)(?:\/(prompt|bring-back|estimate|generate|plan))?)?$/);
+  if (!m) return null;
+  const [, rawWs, area, rawId, action] = m;
+  const ws = decodeURIComponent(rawWs), id = rawId ? decodeURIComponent(rawId) : '';
+  const method = request.method;
+  const body = method === 'POST' ? await request.json().catch(() => ({})) : null;
+  const need = (perm: Parameters<typeof requireWorkspace>[3]) => requireWorkspace(request, env, ws, perm);
+  if (area === 'brand-kit' && !id && method === 'GET') { await need('today.read'); return json(await engine.getKit(env, ws)); }
+  if (area === 'brand-kit' && !id && method === 'POST') { const { email } = await need('members.manage'); return json(await engine.saveKit(env, ws, email, body), 201); }
+  if (area !== 'packs') return json({ error: 'not found' }, 404);
+  if (!id && method === 'GET') { await need('today.read'); return json(await engine.listPacks(env, ws)); }
+  if (!id && method === 'POST') { const { email, membership } = await need('content.create'); return json(await engine.createPack(env, membership, email, body), 201); }
+  if (id && !action && method === 'GET') { await need('today.read'); return json(await engine.getPack(env, ws, id)); }
+  if (action === 'estimate' && method === 'GET') { const { membership } = await need('content.create'); return json(await engine.estimate(env, membership, id)); }
+  if (method !== 'POST') return json({ error: 'not found' }, 404);
+  const { email, membership } = await need('content.create');
+  if (action === 'prompt') return json(await engine.packPrompt(env, membership, id, email, body));
+  if (action === 'bring-back') return json(await engine.bringBack(env, ws, id, email, body), 201);
+  if (action === 'generate') return json(await engine.generate(env, membership, id, email), 201);
+  if (action === 'plan') return json(await engine.plan(env, ws, id, body, can(membership.role, 'content.publish')));
   return json({ error: 'not found' }, 404);
 }
