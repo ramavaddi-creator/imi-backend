@@ -48,6 +48,8 @@ export async function handleV1(request: Request, env: Env, path: string): Promis
   try {
     const admin = await handleAdmin(request, env, path);
     if (admin) return admin;
+    const eng0 = await handleEngine(request, env, path);
+    if (eng0) return eng0;
     const created = await handleCreate(request, env, path);
     if (created) return created;
     const intel = await handleIntel(request, env, path);
@@ -56,8 +58,6 @@ export async function handleV1(request: Request, env: Env, path: string): Promis
     if (search) return search;
     const social = await handleSocial(request, env, path);
     if (social) return social;
-    const eng = await handleEngine(request, env, path);
-    if (eng) return eng;
     if (request.method !== 'GET') return json({ error: 'not found' }, 404);
     if (path === '/v1/me') {
       const email = verifiedEmail(request);
@@ -375,6 +375,21 @@ async function handleSocial(request: Request, env: Env, path: string): Promise<R
 // Round 11: Build 4, the Content Engine. Reading needs today.read; making packs needs content.create;
 // changing the Brand Kit is an owner action (members.manage); scheduling from a plan needs content.publish.
 async function handleEngine(request: Request, env: Env, path: string): Promise<Response | null> {
+  const mm = path.match(/^\/v1\/workspaces\/([^/]+)\/packs\/([^/]+)\/media(?:\/([^/]+)(?:\/(remove))?)?$/);
+  if (mm) {
+    const ws = decodeURIComponent(mm[1]), pid = decodeURIComponent(mm[2]), mid = mm[3] ? decodeURIComponent(mm[3]) : '';
+    if (!mid && request.method === 'PUT') { const { email } = await requireWorkspace(request, env, ws, 'content.create'); return json(await engine.addPackMedia(env, ws, pid, email, request), 201); }
+    if (!mid && request.method === 'GET') { await requireWorkspace(request, env, ws, 'today.read'); return json(await engine.listPackMedia(env, ws, pid)); }
+    if (mid && !mm[4] && request.method === 'GET') { await requireWorkspace(request, env, ws, 'today.read'); return engine.getPackMedia(env, ws, pid, mid); }
+    if (mid && mm[4] === 'remove' && request.method === 'POST') { await requireWorkspace(request, env, ws, 'content.create'); return json(await engine.removePackMedia(env, ws, pid, mid)); }
+    return json({ error: 'not found' }, 404);
+  }
+  const um = path.match(/^\/v1\/workspaces\/([^/]+)\/drafts\/([^/]+)\/use-media$/);
+  if (um && request.method === 'POST') {
+    const ws = decodeURIComponent(um[1]);
+    await requireWorkspace(request, env, ws, 'content.create');
+    return json(await engine.useMediaOnDraft(env, ws, decodeURIComponent(um[2]), await request.json().catch(() => ({}))));
+  }
   const m = path.match(/^\/v1\/workspaces\/([^/]+)\/(brand-kit|packs)(?:\/([^/]+)(?:\/(prompt|bring-back|estimate|generate|plan))?)?$/);
   if (!m) return null;
   const [, rawWs, area, rawId, action] = m;

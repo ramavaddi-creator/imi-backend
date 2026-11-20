@@ -170,7 +170,7 @@ export async function getPack(env: Env, ws: string, id: string) {
   const p = await getPackRow(env, ws, id);
   const kv = await kitVersion(env, ws, p.brand_kit_version_id);
   const { results } = await env.DB.prepare(`SELECT d.id, d.headline, d.caption, d.format, d.status, d.version, d.scheduled_for, d.scheduled_channel, d.approved_by, d.approved_at,
-    d.format_template_version_id, d.brand_kit_version_id, d.approved_kit_version_id, d.approved_template_version_id, t.template_key, t.version AS template_version, t.channel
+    d.format_template_version_id, d.brand_kit_version_id, d.approved_kit_version_id, d.approved_template_version_id, d.pack_media_id, d.media_type, d.ai_generated_media, t.template_key, t.version AS template_version, t.channel
     FROM drafts d LEFT JOIN format_template_versions t ON t.id = d.format_template_version_id WHERE d.pack_id = ? AND d.workspace_id = ? ORDER BY t.template_key`).bind(id, ws).all<any>();
   const drafts: any[] = [];
   for (const d of results ?? []) drafts.push({ ...d, checks: await draftChecks(env, ws, d) });
@@ -178,6 +178,7 @@ export async function getPack(env: Env, ws: string, id: string) {
     id: p.id, inputKind: p.input_kind, inputText: p.input_text, provenance: JSON.parse(p.input_provenance_json), sourceRecordId: p.source_record_id,
     kit: kv ? { id: kv.id, version: kv.version } : null, templates: JSON.parse(p.templates_json), ideaMap: p.idea_map_json ? JSON.parse(p.idea_map_json) : null,
     status: p.status, route: p.route, estCostInr: p.est_cost_inr, createdBy: p.created_by, createdAt: p.created_at, drafts,
+    media: await listPackMedia(env, ws, p.id), mediaLimits: MEDIA_LIMIT_NOTE,
   };
 }
 
@@ -210,6 +211,7 @@ async function buildPackPrompt(env: Env, m: Membership, p: any) {
     ...k.visual.imageRules.map((c) => `- ${c}`),
     '- Use only facts stated above or in the Brand Facts. Mark anything else [suggestion].',
     ...(facts.length ? ['', 'BRAND FACTS (state them exactly; never use the wrong forms):', ...facts.map((f) => `- ${f.statement}${f.wrongForms.length ? ` Never write: ${f.wrongForms.map((w) => `"${w}"`).join(', ')}.` : ''}`)] : []),
+    ...(await mediaLines(env, p.id)),
     '',
     'FIRST, AN IDEA MAP:',
     'IDEA MAP',
@@ -373,4 +375,91 @@ export async function plan(env: Env, ws: string, id: string, body: any, canSched
     return { cadence: cad, items: order, scheduled, note: `${scheduled} approved drafts scheduled. Drafts not yet approved were left unscheduled.` };
   }
   return { cadence: cad, items: order, note: `Suggested: one post every ${gapDays} day(s) at ${cad.preferredTime ?? '18:30'} IST, within this brand's longest gap of ${cad.maxGapDays} day(s). Only approved drafts can be scheduled.` };
+}
+
+// ---------------------------------------------------------------- round 11.1: photos and videos on a pack
+
+const PACK_MEDIA: Record<string, { ext: string; kind: 'image' | 'video'; max: number }> = {
+  'image/jpeg': { ext: 'jpg', kind: 'image', max: 20 * 1024 * 1024 },
+  'image/png': { ext: 'png', kind: 'image', max: 20 * 1024 * 1024 },
+  'image/webp': { ext: 'webp', kind: 'image', max: 20 * 1024 * 1024 },
+  'video/mp4': { ext: 'mp4', kind: 'video', max: 95 * 1024 * 1024 },
+  'video/quicktime': { ext: 'mov', kind: 'video', max: 95 * 1024 * 1024 },
+  'video/webm': { ext: 'webm', kind: 'video', max: 95 * 1024 * 1024 },
+};
+export const MEDIA_LIMIT_NOTE = 'Photos up to 20 MB (JPEG, PNG, WebP); videos up to 95 MB (MP4, MOV, WebM).';
+
+// The file streams straight to private storage; the declared size is checked first (Cloudflare's own
+// limit for one upload is 100 MB). The person must say whether it is real or AI-made.
+export async function addPackMedia(env: Env, ws: string, id: string, who: string, request: Request) {
+  const p = await getPackRow(env, ws, id);
+  const type = (request.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  const spec = PACK_MEDIA[type];
+  if (!spec) throw new HttpError(415, `This file type is not accepted. ${MEDIA_LIMIT_NOTE}`);
+  const u = new URL(request.url);
+  const origin = u.searchParams.get('origin');
+  if (origin !== 'real' && origin !== 'ai_made') throw new HttpError(400, 'Say whether this is a real photo or video, or AI-made.');
+  const bytes = Number(request.headers.get('content-length'));
+  if (!Number.isFinite(bytes) || bytes < 100) throw new HttpError(411, 'The file size was not sent. Try again.');
+  if (bytes > spec.max) throw new HttpError(413, `Too large. ${MEDIA_LIMIT_NOTE}`);
+  const count = (await env.DB.prepare('SELECT COUNT(*) AS n FROM pack_media WHERE pack_id = ? AND removed_at IS NULL').bind(p.id).first<{ n: number }>())?.n ?? 0;
+  if (count >= 20) throw new HttpError(409, 'A pack holds up to 20 photos and videos.');
+  const mediaId = crypto.randomUUID();
+  const key = `packs/${ws}/${p.id}/${mediaId}.${spec.ext}`;
+  await env.POSTERS.put(key, request.body ?? (await request.arrayBuffer()), { httpMetadata: { contentType: type } });
+  const name = clip(u.searchParams.get('name'), 120) || null;
+  await env.DB.prepare(`INSERT INTO pack_media (id, workspace_id, pack_id, r2_key, media_type, kind, origin, bytes, file_name, uploaded_by, uploaded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(mediaId, ws, p.id, key, type, spec.kind, origin, bytes, name, who, iso()).run();
+  return listPackMedia(env, ws, p.id);
+}
+
+export async function listPackMedia(env: Env, ws: string, packId: string) {
+  const { results } = await env.DB.prepare(`SELECT id, media_type, kind, origin, bytes, file_name, uploaded_by, uploaded_at,
+    (SELECT COUNT(*) FROM drafts d WHERE d.pack_media_id = m.id) AS used_by FROM pack_media m WHERE pack_id = ? AND workspace_id = ? AND removed_at IS NULL ORDER BY uploaded_at`).bind(packId, ws).all<any>();
+  return (results ?? []).map((m) => ({ ...m, label: m.origin === 'ai_made' ? 'AI-made, not a photograph' : m.kind === 'video' ? 'Real video' : 'Real photo' }));
+}
+
+export async function getPackMedia(env: Env, ws: string, packId: string, mediaId: string) {
+  const m = await env.DB.prepare('SELECT r2_key, media_type FROM pack_media WHERE id = ? AND pack_id = ? AND workspace_id = ? AND removed_at IS NULL').bind(mediaId, packId, ws).first<any>();
+  if (!m) throw new HttpError(404, 'File not found');
+  const obj = await env.POSTERS.get(m.r2_key);
+  if (!obj) throw new HttpError(404, 'File not found');
+  return new Response(obj.body, { headers: { 'Content-Type': m.media_type, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
+}
+
+// A file a draft already uses stays (the approval covers it); otherwise it is removed from storage.
+export async function removePackMedia(env: Env, ws: string, packId: string, mediaId: string) {
+  const m = await env.DB.prepare('SELECT r2_key FROM pack_media WHERE id = ? AND pack_id = ? AND workspace_id = ? AND removed_at IS NULL').bind(mediaId, packId, ws).first<any>();
+  if (!m) throw new HttpError(404, 'File not found');
+  if (await env.DB.prepare('SELECT 1 FROM drafts WHERE pack_media_id = ? LIMIT 1').bind(mediaId).first()) throw new HttpError(409, 'A draft uses this file. Choose another file for that draft first.');
+  await env.POSTERS.delete(m.r2_key);
+  await env.DB.prepare('UPDATE pack_media SET removed_at = ? WHERE id = ?').bind(iso(), mediaId).run();
+  return listPackMedia(env, ws, packId);
+}
+
+// Gives a draft one of its pack's files. Like any media change, it makes a new version and clears approval.
+export async function useMediaOnDraft(env: Env, ws: string, draftId: string, body: any) {
+  const d = await env.DB.prepare('SELECT * FROM drafts WHERE id = ? AND workspace_id = ?').bind(draftId, ws).first<any>();
+  if (!d) throw new HttpError(404, 'Draft not found');
+  if (d.status === 'posted') throw new HttpError(409, 'This draft has been posted.');
+  if (!d.pack_id) throw new HttpError(409, 'Only drafts from a content pack can use pack files. Upload an image on the draft instead.');
+  const m = await env.DB.prepare('SELECT * FROM pack_media WHERE id = ? AND pack_id = ? AND workspace_id = ? AND removed_at IS NULL').bind(String(body?.mediaId ?? ''), d.pack_id, ws).first<any>();
+  if (!m) throw new HttpError(404, 'File not found in this pack');
+  await env.DB.prepare(`UPDATE drafts SET media_key = ?, media_type = ?, ai_generated_media = ?, pack_media_id = ?, version = version + 1, status = 'draft', approved_by = NULL, approved_at = NULL,
+      approved_version = NULL, approved_kit_version_id = NULL, approved_template_version_id = NULL, scheduled_for = NULL, scheduled_channel = NULL, updated_at = ? WHERE id = ? AND workspace_id = ?`)
+    .bind(m.r2_key, m.media_type, m.origin === 'ai_made' ? 1 : 0, m.id, now(), draftId, ws).run();
+  return { id: draftId, mediaId: m.id, mediaType: m.media_type, aiGenerated: m.origin === 'ai_made', version: d.version + 1, status: 'draft' };
+}
+
+// What the AI is told about the pack's files (it cannot see them through copy and paste).
+async function mediaLines(env: Env, packId: string) {
+  const { results } = await env.DB.prepare("SELECT kind, origin, file_name FROM pack_media WHERE pack_id = ? AND removed_at IS NULL").bind(packId).all<any>();
+  if (!results?.length) return [];
+  const photos = results.filter((r) => r.kind === 'image' && r.origin === 'real').length, videos = results.filter((r) => r.kind === 'video' && r.origin === 'real').length;
+  const ai = results.filter((r) => r.origin === 'ai_made').length;
+  return ['', 'FILES THE OWNER HAS FOR THIS PACK:',
+    `- ${photos} real photo(s), ${videos} real video(s)${ai ? `, ${ai} AI-made image(s) or video(s)` : ''}.`,
+    '- Write the formats to use them (a reel for a video, a carousel for several photos).',
+    '- Never describe details you cannot see; if a photo is attached to this message, describe only what is in it.',
+    ...(ai ? ['- Any AI-made file must be labelled "AI-made" in the caption and never presented as a real photograph.'] : [])];
 }

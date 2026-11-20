@@ -192,19 +192,26 @@ export async function markPosted(env: Env, ws: string, id: string, who: string, 
 
 // ------------------------------------------------------------------ media brought back (private)
 
-const MEDIA: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+const MEDIA: Record<string, { ext: string; max: number }> = {
+  'image/png': { ext: 'png', max: 20 * 1024 * 1024 }, 'image/jpeg': { ext: 'jpg', max: 20 * 1024 * 1024 }, 'image/webp': { ext: 'webp', max: 20 * 1024 * 1024 },
+  // Round 11.1: videos too (Cloudflare accepts up to 100 MB in one upload).
+  'video/mp4': { ext: 'mp4', max: 95 * 1024 * 1024 }, 'video/quicktime': { ext: 'mov', max: 95 * 1024 * 1024 }, 'video/webm': { ext: 'webm', max: 95 * 1024 * 1024 },
+};
 export async function putMedia(env: Env, ws: string, id: string, request: Request) {
   const d = await getDraft(env, ws, id);
   if (d.status === 'posted') throw new HttpError(409, 'This draft has been posted.');
   const type = (request.headers.get('content-type') || '').split(';')[0].trim();
-  if (!MEDIA[type]) throw new HttpError(415, 'Use a PNG, JPEG or WebP image.');
-  const buf = await request.arrayBuffer();
-  if (buf.byteLength < 100 || buf.byteLength > 10 * 1024 * 1024) throw new HttpError(413, 'The image must be under 10 MB.');
+  const spec = MEDIA[type];
+  if (!spec) throw new HttpError(415, 'Use a photo (JPEG, PNG, WebP) or a video (MP4, MOV, WebM).');
+  const declared = Number(request.headers.get('content-length'));
+  const body: ArrayBuffer | ReadableStream = Number.isFinite(declared) && declared > 0 && request.body ? request.body : await request.arrayBuffer();
+  const size = body instanceof ArrayBuffer ? body.byteLength : declared;
+  if (size < 100 || size > spec.max) throw new HttpError(413, `Photos up to 20 MB; videos up to 95 MB.`);
   const aiMade = new URL(request.url).searchParams.get('ai') === '1';
-  const key = `drafts/${ws}/${id}/${crypto.randomUUID()}.${MEDIA[type]}`;
-  await env.POSTERS.put(key, buf, { httpMetadata: { contentType: type } });
-  await env.DB.prepare(`UPDATE drafts SET media_key = ?, media_type = ?, ai_generated_media = ?, version = version + 1, status = 'draft', approved_by = NULL, approved_at = NULL,
-      approved_version = NULL, scheduled_for = NULL, scheduled_channel = NULL, updated_at = ? WHERE id = ? AND workspace_id = ?`).bind(key, type, aiMade ? 1 : 0, now(), id, ws).run();
+  const key = `drafts/${ws}/${id}/${crypto.randomUUID()}.${spec.ext}`;
+  await env.POSTERS.put(key, body, { httpMetadata: { contentType: type } });
+  await env.DB.prepare(`UPDATE drafts SET media_key = ?, media_type = ?, ai_generated_media = ?, pack_media_id = NULL, version = version + 1, status = 'draft', approved_by = NULL, approved_at = NULL,
+      approved_version = NULL, approved_kit_version_id = NULL, approved_template_version_id = NULL, scheduled_for = NULL, scheduled_channel = NULL, updated_at = ? WHERE id = ? AND workspace_id = ?`).bind(key, type, aiMade ? 1 : 0, now(), id, ws).run();
   return { id, mediaType: type, aiGenerated: aiMade };
 }
 
