@@ -12,6 +12,7 @@ import type { Env } from './env';
 import { HttpError, json } from './http';
 import { verifiedEmail } from './policy';
 import * as links from './links';
+import * as partners from './partners';
 import { membershipsOf, requireWorkspace, type Membership } from './tenancy';
 import { crmFetch, crmMode } from './crm_bridge';
 import { can } from './tenancy';
@@ -56,6 +57,8 @@ export async function handleV1(request: Request, env: Env, path: string): Promis
     if (sea) return sea;
     const lk = await handleLinks(request, env, path);
     if (lk) return lk;
+    const pt = await handlePartners(request, env, path);
+    if (pt) return pt;
     const created = await handleCreate(request, env, path);
     if (created) return created;
     const intel = await handleIntel(request, env, path);
@@ -147,6 +150,7 @@ async function today(env: Env, ws: Membership) {
   }
   // Round 12: season and demand dates coming up (30/14/7-day reminders).
   needsYou.push(...(await season.seasonReminders(env, id)));
+  needsYou.push(...(await partners.outreachReminder(env, id)));
   // Records waiting for a decision (decisions are made on the record itself).
   const { results: open } = await env.DB.prepare(
     "SELECT id, code, title FROM intelligence_records WHERE workspace_id = ? AND status IN ('open', 'under_review', 'draft') ORDER BY updated_at DESC LIMIT 3").bind(id).all<any>();
@@ -453,4 +457,46 @@ async function handleLinks(request: Request, env: Env, path: string): Promise<Re
   if (!id) return json(await links.setLink(env, ws, email, await request.json().catch(() => ({}))), 201);
   if (action === 'verify') return json(await links.verifyLink(env, ws, email, id));
   return json(await links.retireLink(env, ws, email, id));
+}
+
+// Round 14: Build 5, partner outreach. Reading: today.read. Adding prospects, checking websites, preparing emails,
+// sequences from AI and logging replies: content.create. Approving a sequence and marking an email sent (a person
+// sends it from their own mailbox): content.publish. The partner profile and OpenStreetMap search: members.manage.
+async function handlePartners(request: Request, env: Env, path: string): Promise<Response | null> {
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/partners(?:\/([a-z-]+)(?:\/([^/]+)(?:\/([a-z-]+))?)?)?$/);
+  if (!m) return null;
+  const ws = decodeURIComponent(m[1]), area = m[2] ?? '', id = m[3] ? decodeURIComponent(m[3]) : '', action = m[4] ?? '';
+  const method = request.method;
+  const need = (perm: Parameters<typeof requireWorkspace>[3]) => requireWorkspace(request, env, ws, perm);
+  const body = method === 'POST' ? await request.json().catch(() => ({})) : null;
+  const q = new URL(request.url).searchParams;
+  if (method === 'GET') {
+    await need('today.read');
+    if (!area) return json(await partners.summary(env, ws));
+    if (area === 'prospects' && !id) return json(await partners.listProspects(env, ws, q));
+    if (area === 'prospects' && id && !action) return json(await partners.getProspect(env, ws, id));
+    if (area === 'sequences' && !id) return json(await partners.listSequences(env, ws));
+    if (area === 'outbox' && !id) return json(await partners.outbox(env, ws));
+    if (area === 'suppressions' && !id) return json(await partners.listSuppressions(env, ws));
+    return json({ error: 'not found' }, 404);
+  }
+  if (method !== 'POST') return json({ error: 'not found' }, 404);
+  if (area === 'profile' && !id) { const { email } = await need('members.manage'); return json(await partners.saveProfile(env, ws, email, body)); }
+  if (area === 'discover' && !id) { const { email } = await need('members.manage'); return json(await partners.discover(env, ws, email, body), 201); }
+  if (area === 'sequences' && id && action === 'approve') { const { email } = await need('content.publish'); return json(await partners.approveSequence(env, ws, email, id)); }
+  if (area === 'messages' && id && action === 'sent') { const { email } = await need('content.publish'); return json(await partners.markSent(env, ws, email, id)); }
+  const { email, membership } = await need('content.create');
+  if (area === 'prospects' && !id) return json(await partners.addProspect(env, ws, email, body), 201);
+  if (area === 'import' && !id) return json(await partners.importCsv(env, ws, email, body), 201);
+  if (area === 'prospects' && id && action === 'check') return json(await partners.checkProspect(env, ws, id));
+  if (area === 'prospects' && id && action === 'reply') return json(await partners.logReply(env, ws, email, id, body), 201);
+  if (area === 'prospects' && id && action === 'stage') return json(await partners.setStage(env, ws, id, body));
+  if (area === 'prepare' && !id) return json(await partners.prepare(env, ws, email, body), 201);
+  if (area === 'sequences' && id === 'prompt' && !action) return json(await partners.sequencePromptFor(env, membership, body));
+  if (area === 'sequences' && id === 'generate' && !action) return json(await partners.generateSequence(env, membership, email, body), 201);
+  if (area === 'sequences' && !id) return json(await partners.bringBackSequence(env, ws, email, body), 201);
+  if (area === 'sequences' && id && action === 'edit') return json(await partners.editSequence(env, ws, email, id, body), 201);
+  if (area === 'messages' && id && action === 'skip') return json(await partners.skipMessage(env, ws, id));
+  if (area === 'suppressions' && !id) return json(await partners.suppress(env, ws, email, body), 201);
+  return json({ error: 'not found' }, 404);
 }
