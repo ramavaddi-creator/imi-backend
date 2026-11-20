@@ -21,6 +21,7 @@ import { listMembers, addMember, changeRole, revokeMember, listFacts, addFact, r
 import { listProviders, addProvider, preparePrompt, createDraft, listDrafts, editDraft, approveDraft, markPosted, putMedia, getMedia, scheduleDraft, calendar, recordOutcome } from './create';
 import { parseConnector, listConnections, updateConnection, oauthStart, runSync, disconnect, listRuns, addManual, listManual, funnel, rotateKeys, needsAttention } from './search';
 import { isOwner } from './policy';
+import * as ig from './instagram';
 import { feeds, parseProfile, listInbox, captureInbox, setInboxStatus, promoteInbox, listRecords, decisionHistory, decideOnRecord, listOutcomes } from './intel';
 
 const GOALS: Record<string, { label: string; phrase: string }> = {
@@ -52,6 +53,8 @@ export async function handleV1(request: Request, env: Env, path: string): Promis
     if (intel) return intel;
     const search = await handleSearch(request, env, path);
     if (search) return search;
+    const social = await handleSocial(request, env, path);
+    if (social) return social;
     if (request.method !== 'GET') return json({ error: 'not found' }, 404);
     if (path === '/v1/me') {
       const email = verifiedEmail(request);
@@ -126,7 +129,7 @@ async function today(env: Env, ws: Membership) {
       why: 'Results are in? Record what happened, so IMI ONE can learn.', action: { label: 'Record results', screen: 'create', ref: d.id } });
   }
   // A Google measurement connection that stopped working (round 9).
-  needsYou.unshift(...(await needsAttention(env, id)));
+  needsYou.unshift(...(await needsAttention(env, id)), ...(await ig.needsAttention(env, id)));
   // AI spending near or over this month's budget (round 5).
   const ai = await aiUsage(env, id);
   if (ai.warning) {
@@ -338,5 +341,30 @@ async function handleSearch(request: Request, env: Env, path: string): Promise<R
   if (action === 'sync' && method === 'POST') return json(await runSync(env, ws, c, 'manual', email));
   if (action === 'disconnect' && method === 'POST') return json(await disconnect(env, ws, c));
   if (action === 'manual' && method === 'POST') { if (c !== 'business_profile') return json({ error: 'not found' }, 404); return json(await addManual(env, ws, email, body), 201); }
+  return json({ error: 'not found' }, 404);
+}
+
+// Round 10: Build 1, Instagram read-only. Reading needs results.read; connecting, fetching, testing and
+// disconnecting are owner actions (channels.connect). No route writes anything to Instagram.
+async function handleSocial(request: Request, env: Env, path: string): Promise<Response | null> {
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/social(?:\/(instagram|runs)(?:\/(connect|sync|test|disconnect|media|account-metrics))?)?$/);
+  if (!m) return null;
+  const [, rawWs, platform, action] = m;
+  const ws = decodeURIComponent(rawWs);
+  const method = request.method;
+  const params = new URL(request.url).searchParams;
+  const need = (perm: Parameters<typeof requireWorkspace>[3]) => requireWorkspace(request, env, ws, perm);
+  if (!platform && method === 'GET') { await need('results.read'); return json(await ig.getAccount(env, ws)); }
+  if (platform === 'runs' && !action && method === 'GET') { await need('results.read'); return json(await listRuns(env, ws, 'instagram')); }
+  if (platform !== 'instagram') return json({ error: 'not found' }, 404);
+  if (action === 'media' && method === 'GET') { await need('results.read'); return json(await ig.listMedia(env, ws, params.get('limit'))); }
+  if (action === 'account-metrics' && method === 'GET') { await need('results.read'); return json(await ig.accountMetrics(env, ws, params.get('days'))); }
+  if (method !== 'POST') return json({ error: 'not found' }, 404);
+  const { email } = await need('channels.connect');
+  const body = await request.json().catch(() => ({}));
+  if (action === 'connect') return json(await ig.connect(env, ws, email, body));
+  if (action === 'sync') return json(await ig.runSync(env, ws, 'manual', email));
+  if (action === 'test') return json(await ig.connectionTest(env, ws));
+  if (action === 'disconnect') return json(await ig.disconnect(env, ws));
   return json({ error: 'not found' }, 404);
 }

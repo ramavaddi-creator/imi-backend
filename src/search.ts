@@ -16,6 +16,7 @@ import { sealBound, openBound, keyring } from './crypto';
 import { can, type Role } from './tenancy';
 import { crmFetch, crmMode } from './crm_bridge';
 import { legacyWorkspace } from './aibudget';
+import { rotateInstagramKeys } from './instagram';
 
 export type Connector = 'search_console' | 'ga4' | 'business_profile';
 export const CONNECTORS: Connector[] = ['search_console', 'ga4', 'business_profile'];
@@ -426,7 +427,7 @@ export async function syncAll(env: Env) {
   return out;
 }
 
-export async function listRuns(env: Env, ws: string, c: Connector | null) {
+export async function listRuns(env: Env, ws: string, c: Connector | 'instagram' | null) {
   const { results } = await env.DB.prepare(
     `SELECT id, connector, started_at, finished_at, trigger, status, pages_fetched, items_new, items_unchanged, items_changed, items_failed, retries_json, window_start, window_end, error_summary, resumed_from_run_id
      FROM sync_runs WHERE workspace_id = ? AND (? IS NULL OR connector = ?) ORDER BY started_at DESC LIMIT 30`).bind(ws, c, c).all<any>();
@@ -452,6 +453,9 @@ export async function rotateKeys(env: Env, by: string) {
       moved++;
     } catch { failed++; }
   }
+  // Instagram tokens (round 10) are rotated in the same run.
+  const ig = await rotateInstagramKeys(env, ring.current);
+  moved += ig.moved; already += ig.already; failed += ig.failed;
   const status = failed ? 'partial' : 'complete';
   await env.DB.prepare('UPDATE sync_runs SET status = ?, finished_at = ?, items_changed = ?, items_unchanged = ?, items_failed = ?, error_summary = ? WHERE id = ?')
     .bind(status, iso(), moved, already, failed, failed ? `${failed} sign-ins could not be re-encrypted; keep the old key until fixed.` : null, runId).run();

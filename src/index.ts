@@ -9,6 +9,7 @@ import { handleStudioRoutes, serveMedia } from './studio';
 import { handleConnectionRoutes, handleOAuthCallback } from './connections';
 import { handleCrmRoutes, handlePublicEnquiry } from './crm';
 import { oauthCallback as googleMeasureCallback, syncAll as googleSyncAll } from './search';
+import { syncAllInstagram } from './instagram';
 
 export type { Env };
 
@@ -642,12 +643,12 @@ export function createWorker(opts: { devIdentity?: string } = {}) {
   };
 }
 
-// Round 9: the daily Google fetch (cron in wrangler.staging.toml only). Each brand's
+// Round 9/10: the daily Google and Instagram fetch (cron in wrangler.staging.toml only). Each brand's
 // connectors run separately and carry their own workspace (design T21).
 const worker = createWorker();
 export default {
   fetch: worker.fetch,
   async scheduled(_event: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
-    ctx.waitUntil(googleSyncAll(env));
+    ctx.waitUntil(googleSyncAll(env).then(() => syncAllInstagram(env)));
   },
 };
