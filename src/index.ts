@@ -10,6 +10,7 @@ import { handleConnectionRoutes, handleOAuthCallback } from './connections';
 import { handleCrmRoutes, handlePublicEnquiry } from './crm';
 import { oauthCallback as googleMeasureCallback, syncAll as googleSyncAll } from './search';
 import { syncAllInstagram } from './instagram';
+import { weeklySnapshots } from './season';
 
 export type { Env };
 
@@ -649,6 +650,7 @@ const worker = createWorker();
 export default {
   fetch: worker.fetch,
   async scheduled(_event: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
-    ctx.waitUntil(googleSyncAll(env).then(() => syncAllInstagram(env)));
+    // Fetch first, then (on Mondays) keep last week's funnel for brands with a baseline.
+    ctx.waitUntil(googleSyncAll(env).then(() => syncAllInstagram(env)).then(() => weeklySnapshots(env)));
   },
 };

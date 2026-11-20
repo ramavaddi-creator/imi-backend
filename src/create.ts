@@ -7,6 +7,7 @@ import type { Membership } from './tenancy';
 import { allocCode } from './intel';
 import { factLines } from './admin';
 import { draftChecks } from './engine';
+import { listEvents } from './season';
 
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 const clip = (s: unknown, n: number) => (typeof s === 'string' ? s.trim().slice(0, n) : '');
@@ -269,6 +270,8 @@ export async function calendar(env: Env, ws: string, month: string) {
       stateNote: d.status === 'posted' ? 'Posted' : 'You post this; IMI ONE reminds you.',
     })),
     blocks: [],
+    // Round 12: season and demand dates that overlap this month.
+    events: await listEvents(env, ws, `${month}-01`, `${month}-31`),
   };
 }
 

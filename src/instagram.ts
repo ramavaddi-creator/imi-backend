@@ -462,7 +462,7 @@ export async function needsAttention(env: Env, ws: string) {
   if (!r || r.status === 'revoked' || r.status === 'not_connected') return [];
   const soon = r.token_expires_at && Date.parse(r.token_expires_at) - Date.now() < 7 * 86400_000;
   if (r.status !== 'needs_reconnect' && !soon) return [];
-  return [{ id: 'instagram', kind: 'connection', subject: 'Instagram', title: r.status === 'needs_reconnect' ? 'Instagram needs reconnecting' : 'Instagram sign-in expires within 7 days',
+  return [{ id: 'instagram', kind: 'fix_connection', subject: 'Instagram', title: r.status === 'needs_reconnect' ? 'Instagram needs reconnecting' : 'Instagram sign-in expires within 7 days',
     why: r.last_error || 'Renewal did not succeed. Reconnect to keep figures current.', action: { label: 'Open Social', screen: 'intelligence', ref: 'social' } }];
 }
 

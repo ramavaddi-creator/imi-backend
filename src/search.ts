@@ -504,9 +504,9 @@ async function freshness(env: Env, ws: string, c: Connector) {
   return env.DB.prepare(`SELECT status, finished_at FROM sync_runs WHERE workspace_id = ? AND connector = ? AND status != 'running' ORDER BY started_at DESC LIMIT 1`).bind(ws, c).first<{ status: string; finished_at: string }>();
 }
 
-export async function funnel(env: Env, ws: string, role: Role, daysRaw: string | null) {
-  const days = Math.min(90, Math.max(7, Number(daysRaw) || 28));
-  const end = day(-1), start = day(-days);
+export async function funnel(env: Env, ws: string, role: Role, daysRaw: string | null, window?: { start: string; end: string }) {
+  const days = window ? Math.round((Date.parse(window.end) - Date.parse(window.start)) / 86400_000) + 1 : Math.min(90, Math.max(7, Number(daysRaw) || 28));
+  const end = window?.end ?? day(-1), start = window?.start ?? day(-days);
   const since = `${start}T00:00:00Z`;
   const stages: any[] = [];
   const unavailable = (key: string, label: string, source: string, detail: string) => ({ key, label, source, status: 'unavailable', value: null, detail });
@@ -617,7 +617,7 @@ export async function funnel(env: Env, ws: string, role: Role, daysRaw: string |
 export async function needsAttention(env: Env, ws: string) {
   const { results } = await env.DB.prepare(`SELECT connector, last_error FROM google_connections WHERE workspace_id = ? AND (status = 'needs_reconnect' OR api_enabled = 'no' OR access_approved = 'no')`).bind(ws).all<any>();
   return (results ?? []).map((x) => ({
-    id: `google-${x.connector}`, kind: 'connection', subject: INFO[x.connector as Connector].name, title: `${INFO[x.connector as Connector].name} needs attention`,
+    id: `google-${x.connector}`, kind: 'fix_connection', subject: INFO[x.connector as Connector].name, title: `${INFO[x.connector as Connector].name} needs attention`,
     why: x.last_error || 'The connection stopped working.', action: { label: 'Open Search', screen: 'intelligence', ref: 'search' },
   }));
 }

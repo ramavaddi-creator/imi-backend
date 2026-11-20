@@ -23,6 +23,7 @@ import { parseConnector, listConnections, updateConnection, oauthStart, runSync,
 import { isOwner } from './policy';
 import * as ig from './instagram';
 import * as engine from './engine';
+import * as season from './season';
 import { feeds, parseProfile, listInbox, captureInbox, setInboxStatus, promoteInbox, listRecords, decisionHistory, decideOnRecord, listOutcomes } from './intel';
 
 const GOALS: Record<string, { label: string; phrase: string }> = {
@@ -50,6 +51,8 @@ export async function handleV1(request: Request, env: Env, path: string): Promis
     if (admin) return admin;
     const eng0 = await handleEngine(request, env, path);
     if (eng0) return eng0;
+    const sea = await handleSeason(request, env, path);
+    if (sea) return sea;
     const created = await handleCreate(request, env, path);
     if (created) return created;
     const intel = await handleIntel(request, env, path);
@@ -139,6 +142,8 @@ async function today(env: Env, ws: Membership) {
     needsYou.unshift({ id: 'ai-budget', kind: 'ai_budget', subject: `${ai.spentInr} / ${ai.monthlyCapInr}`, title: 'AI spending is close to this month\'s budget',
       why: 'New AI requests stop when the budget is reached.', action: { label: 'Review the AI budget', screen: 'admin', ref: 'ai' } });
   }
+  // Round 12: season and demand dates coming up (30/14/7-day reminders).
+  needsYou.push(...(await season.seasonReminders(env, id)));
   // Records waiting for a decision (decisions are made on the record itself).
   const { results: open } = await env.DB.prepare(
     "SELECT id, code, title FROM intelligence_records WHERE workspace_id = ? AND status IN ('open', 'under_review', 'draft') ORDER BY updated_at DESC LIMIT 3").bind(id).all<any>();
@@ -410,5 +415,25 @@ async function handleEngine(request: Request, env: Env, path: string): Promise<R
   if (action === 'bring-back') return json(await engine.bringBack(env, ws, id, email, body), 201);
   if (action === 'generate') return json(await engine.generate(env, membership, id, email), 201);
   if (action === 'plan') return json(await engine.plan(env, ws, id, body, can(membership.role, 'content.publish')));
+  return json({ error: 'not found' }, 404);
+}
+
+// Round 12: season and demand calendar (reading: today.read; changes: owners via content.publish),
+// and the baseline (reading: results.read; starting and taking a snapshot: owners via members.manage).
+async function handleSeason(request: Request, env: Env, path: string): Promise<Response | null> {
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/(events|baseline)(?:\/([^/]+)(?:\/(retire))?)?$/);
+  if (!m) return null;
+  const [, rawWs, area, rawId, action] = m;
+  const ws = decodeURIComponent(rawWs), id = rawId ? decodeURIComponent(rawId) : '';
+  const method = request.method;
+  const need = (perm: Parameters<typeof requireWorkspace>[3]) => requireWorkspace(request, env, ws, perm);
+  const body = method === 'POST' ? await request.json().catch(() => ({})) : null;
+  const q = new URL(request.url).searchParams;
+  if (area === 'events' && !id && method === 'GET') { await need('today.read'); return json(await season.listEvents(env, ws, q.get('from'), q.get('to'))); }
+  if (area === 'events' && !id && method === 'POST') { const { email } = await need('content.publish'); return json(await season.addEvent(env, ws, email, body), 201); }
+  if (area === 'events' && id && action === 'retire' && method === 'POST') { const { email } = await need('content.publish'); return json(await season.retireEvent(env, ws, email, id)); }
+  if (area === 'baseline' && !id && method === 'GET') { await need('results.read'); return json(await season.baseline(env, ws)); }
+  if (area === 'baseline' && id === 'start' && !action && method === 'POST') { const { email } = await need('members.manage'); return json(await season.startBaseline(env, ws, email, body), 201); }
+  if (area === 'baseline' && id === 'snapshot' && !action && method === 'POST') { const { email } = await need('members.manage'); await season.takeSnapshot(env, ws, email); return json(await season.baseline(env, ws)); }
   return json({ error: 'not found' }, 404);
 }
