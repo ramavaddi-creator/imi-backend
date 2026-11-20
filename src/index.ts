@@ -8,6 +8,7 @@ import { aiGate, aiRecordEstimate, legacyWorkspace } from './aibudget';
 import { handleStudioRoutes, serveMedia } from './studio';
 import { handleConnectionRoutes, handleOAuthCallback } from './connections';
 import { handleCrmRoutes, handlePublicEnquiry } from './crm';
+import { oauthCallback as googleMeasureCallback, syncAll as googleSyncAll } from './search';
 
 export type { Env };
 
@@ -164,6 +165,10 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (path === '/public/enquiry') {
       const r = await handlePublicEnquiry(request, env, url);
       if (r) return r;
+    }
+    // Round 9: read-only Google measurement sign-in (Search Console, GA4).
+    if (request.method === 'GET' && path === '/oauth/google-measure/callback') {
+      return googleMeasureCallback(request, env, verifiedEmail(request));
     }
     if (request.method === 'GET' && path.startsWith('/oauth/')) {
       const r = await handleOAuthCallback(request, env, url);
@@ -637,4 +642,12 @@ export function createWorker(opts: { devIdentity?: string } = {}) {
   };
 }
 
-export default createWorker();
+// Round 9: the daily Google fetch (cron in wrangler.staging.toml only). Each brand's
+// connectors run separately and carry their own workspace (design T21).
+const worker = createWorker();
+export default {
+  fetch: worker.fetch,
+  async scheduled(_event: unknown, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) {
+    ctx.waitUntil(googleSyncAll(env));
+  },
+};

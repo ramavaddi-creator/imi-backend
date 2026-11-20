@@ -11,6 +11,10 @@ export interface Env {
   OWNER_PIN?: string;
   // 32-byte base64 key that encrypts every stored platform token in D1.
   CONNECTIONS_KEY?: string;
+  // Round 9 key rotation: later key versions and which one seals new tokens (default: the highest present).
+  CONNECTIONS_KEY_V2?: string;
+  CONNECTIONS_KEY_V3?: string;
+  CONNECTIONS_KEY_CURRENT?: string;
   // Where to send the browser after a "Sign in with..." flow finishes.
   APP_URL?: string;
   // ---- Gate 1 sign-in and permissions (src/policy.ts) ----

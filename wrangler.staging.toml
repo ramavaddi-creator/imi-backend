@@ -59,3 +59,9 @@ CRM_PUBLIC_URL = "https://iddav-crm-staging.ramavaddi.workers.dev"
 #   OWNER_PIN        = a new staging PIN
 #   CONNECTIONS_KEY  = new random value (encrypts stored platform tokens)
 # No platform client IDs, no AI keys: staging uses none of production's credentials.
+
+# Round 9: daily read-only Google fetch (Search Console, GA4) at 03:15 UTC = 08:45 IST.
+# Staging only; production gets this only with founder approval.
+[triggers]
+crons = ["15 3 * * *"]
+#   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET = a STAGING-only Google OAuth client (see docs/ROUND9_GOOGLE_SETUP.md)

@@ -19,6 +19,8 @@ import { contentHash } from './studio';
 import { usage as aiUsage, setBudget as setAiBudget } from './aibudget';
 import { listMembers, addMember, changeRole, revokeMember, listFacts, addFact, retireFact, updateProfile, getProfile, toggleProvider, activity } from './admin';
 import { listProviders, addProvider, preparePrompt, createDraft, listDrafts, editDraft, approveDraft, markPosted, putMedia, getMedia, scheduleDraft, calendar, recordOutcome } from './create';
+import { parseConnector, listConnections, updateConnection, oauthStart, runSync, disconnect, listRuns, addManual, listManual, funnel, rotateKeys, needsAttention } from './search';
+import { isOwner } from './policy';
 import { feeds, parseProfile, listInbox, captureInbox, setInboxStatus, promoteInbox, listRecords, decisionHistory, decideOnRecord, listOutcomes } from './intel';
 
 const GOALS: Record<string, { label: string; phrase: string }> = {
@@ -48,6 +50,8 @@ export async function handleV1(request: Request, env: Env, path: string): Promis
     if (created) return created;
     const intel = await handleIntel(request, env, path);
     if (intel) return intel;
+    const search = await handleSearch(request, env, path);
+    if (search) return search;
     if (request.method !== 'GET') return json({ error: 'not found' }, 404);
     if (path === '/v1/me') {
       const email = verifiedEmail(request);
@@ -121,6 +125,8 @@ async function today(env: Env, ws: Membership) {
     needsYou.push({ id: `results-${d.id}`, kind: 'review_learning', subject: d.headline, title: d.headline,
       why: 'Results are in? Record what happened, so IMI ONE can learn.', action: { label: 'Record results', screen: 'create', ref: d.id } });
   }
+  // A Google measurement connection that stopped working (round 9).
+  needsYou.unshift(...(await needsAttention(env, id)));
   // AI spending near or over this month's budget (round 5).
   const ai = await aiUsage(env, id);
   if (ai.warning) {
@@ -292,4 +298,45 @@ async function crmPipeline(env: Env, ws: string, role: Parameters<typeof can>[0]
   if (!res.ok) throw new HttpError(502, `The CRM answered ${res.status}.`);
   const body = await res.json() as Record<string, unknown>;
   return { ...body, crmUrl: env.CRM_PUBLIC_URL || null, source: 'Iddav CRM', retrievedAt: new Date().toISOString() };
+}
+
+// Round 9: Build 3, search and guest acquisition. Reading needs results.read; connecting, fetching and
+// typing in figures are owner actions (channels.connect). The funnel's money and margin follow the role.
+async function handleSearch(request: Request, env: Env, path: string): Promise<Response | null> {
+  if (path === '/v1/admin/google/rotate-keys' && request.method === 'POST') {
+    const email = verifiedEmail(request);
+    if (!isOwner(env, email)) throw new HttpError(403, 'Only the platform owner can rotate encryption keys.');
+    return json(await rotateKeys(env, email!));
+  }
+  const f = path.match(/^\/v1\/workspaces\/([^/]+)\/funnel$/);
+  if (f && request.method === 'GET') {
+    const ws = decodeURIComponent(f[1]);
+    const { membership } = await requireWorkspace(request, env, ws, 'results.read');
+    return json(await funnel(env, ws, membership.role, new URL(request.url).searchParams.get('days')));
+  }
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/google(?:\/([a-z_0-9]+)(?:\/(oauth-start|sync|disconnect|manual))?)?$/);
+  if (!m) return null;
+  const [, rawWs, rawConn, action] = m;
+  const ws = decodeURIComponent(rawWs);
+  const method = request.method;
+  const origin = new URL(request.url).origin;
+  const need = (perm: Parameters<typeof requireWorkspace>[3]) => requireWorkspace(request, env, ws, perm);
+  if (!rawConn && method === 'GET') { await need('results.read'); return json(await listConnections(env, ws, origin)); }
+  if (rawConn === 'runs' && !action && method === 'GET') {
+    await need('results.read');
+    const c = new URL(request.url).searchParams.get('connector');
+    return json(await listRuns(env, ws, c ? parseConnector(c) : null));
+  }
+  if (!rawConn) return json({ error: 'not found' }, 404);
+  // Membership first, so another brand's member learns nothing (404) before the connector name is checked.
+  const body = method === 'POST' ? await request.json().catch(() => ({})) : null;
+  if (action === 'manual' && method === 'GET') { await need('results.read'); if (rawConn !== 'business_profile') return json({ error: 'not found' }, 404); return json(await listManual(env, ws)); }
+  const { email } = await need('channels.connect');
+  const c = parseConnector(rawConn);
+  if (!action && method === 'POST') return json(await updateConnection(env, ws, c, body));
+  if (action === 'oauth-start' && method === 'POST') return json(await oauthStart(env, ws, c, email, origin));
+  if (action === 'sync' && method === 'POST') return json(await runSync(env, ws, c, 'manual', email));
+  if (action === 'disconnect' && method === 'POST') return json(await disconnect(env, ws, c));
+  if (action === 'manual' && method === 'POST') { if (c !== 'business_profile') return json({ error: 'not found' }, 404); return json(await addManual(env, ws, email, body), 201); }
+  return json({ error: 'not found' }, 404);
 }
