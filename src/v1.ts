@@ -11,6 +11,7 @@
 import type { Env } from './env';
 import { HttpError, json } from './http';
 import { verifiedEmail } from './policy';
+import * as links from './links';
 import { membershipsOf, requireWorkspace, type Membership } from './tenancy';
 import { crmFetch, crmMode } from './crm_bridge';
 import { can } from './tenancy';
@@ -53,6 +54,8 @@ export async function handleV1(request: Request, env: Env, path: string): Promis
     if (eng0) return eng0;
     const sea = await handleSeason(request, env, path);
     if (sea) return sea;
+    const lk = await handleLinks(request, env, path);
+    if (lk) return lk;
     const created = await handleCreate(request, env, path);
     if (created) return created;
     const intel = await handleIntel(request, env, path);
@@ -436,4 +439,18 @@ async function handleSeason(request: Request, env: Env, path: string): Promise<R
   if (area === 'baseline' && id === 'start' && !action && method === 'POST') { const { email } = await need('members.manage'); return json(await season.startBaseline(env, ws, email, body), 201); }
   if (area === 'baseline' && id === 'snapshot' && !action && method === 'POST') { const { email } = await need('members.manage'); await season.takeSnapshot(env, ws, email); return json(await season.baseline(env, ws)); }
   return json({ error: 'not found' }, 404);
+}
+
+// Round 13: the brand's official links (reading: today.read; changing and checking: owners via members.manage).
+async function handleLinks(request: Request, env: Env, path: string): Promise<Response | null> {
+  const m = path.match(/^\/v1\/workspaces\/([^/]+)\/links(?:\/([^/]+)\/(verify|retire))?$/);
+  if (!m) return null;
+  const ws = decodeURIComponent(m[1]), id = m[2] ? decodeURIComponent(m[2]) : '', action = m[3];
+  const method = request.method;
+  if (!id && method === 'GET') { await requireWorkspace(request, env, ws, 'today.read'); return json(await links.listLinks(env, ws, new URL(request.url).searchParams.get('campaign'))); }
+  if (method !== 'POST') return json({ error: 'not found' }, 404);
+  const { email } = await requireWorkspace(request, env, ws, 'members.manage');
+  if (!id) return json(await links.setLink(env, ws, email, await request.json().catch(() => ({}))), 201);
+  if (action === 'verify') return json(await links.verifyLink(env, ws, email, id));
+  return json(await links.retireLink(env, ws, email, id));
 }

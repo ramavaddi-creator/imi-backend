@@ -13,12 +13,13 @@ import { HttpError, now } from './http';
 import type { Membership } from './tenancy';
 import { listFacts } from './admin';
 import { redact } from './create';
+import { linkChecks, packLinkLines } from './links';
 import { aiGate, getBudget, costInr, usage } from './aibudget';
 import { io, redact as redactSecrets } from './search';
 
 const iso = () => new Date().toISOString();
 const clip = (s: unknown, n: number) => (typeof s === 'string' ? s.trim().slice(0, n) : '');
-export const PACK_PROMPT_VERSION = 'imi-pack-1.0 (2026-11-20)';
+export const PACK_PROMPT_VERSION = 'imi-pack-1.1 (2026-11-20, links)';
 
 // ---------------------------------------------------------------- Brand Kit
 
@@ -108,6 +109,7 @@ export async function checkText(env: Env, ws: string, d: { headline: string; cap
   const tags = (d.caption.match(/#[\p{L}\p{N}_]+/gu) ?? []).length;
   if (rules && typeof rules.maxHashtags === 'number' && tags > rules.maxHashtags) out.push({ level: 'warn', code: 'hashtags', message: `${tags} hashtags; this format allows ${rules.maxHashtags}.` });
   if (rules?.maxChars && d.caption.length > rules.maxChars) out.push({ level: 'warn', code: 'length', message: `The caption is ${d.caption.length} characters; the limit is ${rules.maxChars}.` });
+  out.push(...(await linkChecks(env, ws, `${d.headline}\n${d.caption}`)));
   return out;
 }
 
@@ -212,6 +214,7 @@ async function buildPackPrompt(env: Env, m: Membership, p: any) {
     '- Use only facts stated above or in the Brand Facts. Mark anything else [suggestion].',
     ...(facts.length ? ['', 'BRAND FACTS (state them exactly; never use the wrong forms):', ...facts.map((f) => `- ${f.statement}${f.wrongForms.length ? ` Never write: ${f.wrongForms.map((w) => `"${w}"`).join(', ')}.` : ''}`)] : []),
     ...(await mediaLines(env, p.id)),
+    '@@LINKS@@',
     '',
     'FIRST, AN IDEA MAP:',
     'IDEA MAP',
@@ -223,7 +226,11 @@ async function buildPackPrompt(env: Env, m: Membership, p: any) {
     'THEN ONE SECTION PER FORMAT, EXACTLY IN THIS FORM:',
     ...tpls.flatMap((t) => [`=== ${t.template_key} ===`, `(${t.name}) ${t.prompt_template}`, 'HEADLINE: <one line>', '<the rest of this format>', '']),
   ].filter((l, i, a) => l !== '' || a[i - 1] !== '');
-  return redact(lines.join('\n'));
+  // The brand's own links go in after redaction, which would otherwise remove its WhatsApp number and email.
+  const [head, tail] = lines.join('\n').split('@@LINKS@@');
+  const a = redact(head), b = redact(tail);
+  const linkBlock = (await packLinkLines(env, m.workspace_id, tplRows.map((t) => t.key))).join('\n');
+  return { text: `${a.text.replace(/\n+$/, '')}\n${linkBlock}\n${b.text.replace(/^\n+/, '\n')}`, count: a.count + b.count };
 }
 
 export async function packPrompt(env: Env, m: Membership, id: string, who: string, body: any) {
