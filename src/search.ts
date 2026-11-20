@@ -234,7 +234,7 @@ export async function oauthStart(env: Env, ws: string, c: Connector, email: stri
 }
 
 function page(env: Env, ok: boolean, message: string): Response {
-  const back = `${env.APP_URL || ''}/#/intelligence/search`;
+  const back = `${env.APP_URL || ''}/#intelligence-search`;
   const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!));
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>IMI ONE</title>
 <body style="font-family:system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1 style="font-size:1.3rem">${ok ? 'Connected' : 'Not connected'}</h1><p>${esc(message)}</p><p><a href="${esc(back)}">Back to IMI ONE</a></p></body>`,
