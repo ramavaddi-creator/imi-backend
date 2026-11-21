@@ -20,7 +20,7 @@ import { legacyWorkspace } from './aibudget';
 import { usage as aiUsage, setBudget as setAiBudget } from './aibudget';
 import { listMembers, addMember, changeRole, revokeMember, listFacts, addFact, retireFact, updateProfile, getProfile, toggleProvider, activity } from './admin';
 import { listProviders, addProvider, preparePrompt, createDraft, listDrafts, editDraft, approveDraft, markPosted, putMedia, getMedia, scheduleDraft, calendar, recordOutcome } from './create';
-import { parseConnector, listConnections, updateConnection, oauthStart, runSync, disconnect, listRuns, addManual, listManual, funnel, rotateKeys, needsAttention } from './search';
+import { parseConnector, listConnections, updateConnection, oauthStart, runSync, disconnect, listRuns, addManual, listManual, funnel, rotateKeys, needsAttention, listTopics, saveTopic, retireTopic } from './search';
 import { isOwner } from './policy';
 import * as ig from './instagram';
 import * as engine from './engine';
@@ -322,6 +322,17 @@ async function handleSearch(request: Request, env: Env, path: string): Promise<R
     const ws = decodeURIComponent(f[1]);
     const { membership } = await requireWorkspace(request, env, ws, 'results.read');
     return json(await funnel(env, ws, membership.role, new URL(request.url).searchParams.get('days')));
+  }
+  // Round 17: searches grouped by topic. Reading: results.read. Changing topics: owners (channels.connect).
+  const st = path.match(/^\/v1\/workspaces\/([^/]+)\/search-topics(?:\/([^/]+)(?:\/(retire))?)?$/);
+  if (st) {
+    const ws = decodeURIComponent(st[1]), id = st[2] ? decodeURIComponent(st[2]) : null;
+    if (!id && request.method === 'GET') { await requireWorkspace(request, env, ws, 'results.read'); return json(await listTopics(env, ws)); }
+    if (request.method !== 'POST') return json({ error: 'not found' }, 404);
+    const { email } = await requireWorkspace(request, env, ws, 'channels.connect');
+    if (st[3] === 'retire' && id) return json(await retireTopic(env, ws, id));
+    if (!st[3]) return json(await saveTopic(env, ws, email, id, await request.json().catch(() => ({}))), id ? 200 : 201);
+    return json({ error: 'not found' }, 404);
   }
   const m = path.match(/^\/v1\/workspaces\/([^/]+)\/google(?:\/([a-z_0-9]+)(?:\/(oauth-start|sync|disconnect|manual))?)?$/);
   if (!m) return null;

@@ -8,6 +8,7 @@ import worker from '../src/index.ts';
 import { io, redact } from '../src/search.ts';
 import { sealBound, openBound } from '../src/crypto.ts';
 import { makeD1 } from './helpers/d1.ts';
+import { readFileSync } from 'node:fs';
 
 const KEY1 = Buffer.alloc(32, 7).toString('base64');
 const KEY2 = Buffer.alloc(32, 9).toString('base64');
@@ -16,6 +17,14 @@ const REFRESH = '1//refresh-SECRET-abcdefghijklmnop';
 const ACCESS = 'ya29.access-SECRET-xyz';
 
 // ---------- a fake Google ----------
+const TOPIC_ROWS = [
+  { keys: ['tadoba resort'], impressions: 80, clicks: 6, position: 5.1 },
+  { keys: ['tadoba andhari safari price'], impressions: 50, clicks: 4, position: 7 },
+  { keys: ['pench jungle camp'], impressions: 40, clicks: 2, position: 9 },
+  { keys: ['pencher tools'], impressions: 99, clicks: 9, position: 2 },
+  { keys: ['kanha safari booking'], impressions: 20, clicks: 1, position: 12 },
+  { keys: ['iddav wildstay'], impressions: 15, clicks: 5, position: 1.2 },
+];
 type Plan = { token?: number[]; daily?: (number | 'rows')[]; queries?: number[]; ga?: number[]; events?: number[] };
 let google: { calls: string[]; plan: Plan; dailyRows: any[]; revoked: boolean; failQueries: boolean };
 function resetGoogle() {
@@ -41,6 +50,12 @@ io.fetch = async (input: any, init?: RequestInit) => {
   if (url.includes('searchAnalytics/query')) {
     const body = JSON.parse(String(init?.body));
     if (body.dimensions[0] === 'date') { const f = next('daily'); if (f && f !== 'rows') return reply(f, 'Google error'); return reply(200, { rows: google.dailyRows }); }
+    if (body.dimensionFilterGroups) {
+      const expr = body.dimensionFilterGroups[0].filters[0];
+      google.calls.push(`FILTER ${expr.operator} ${expr.expression}`);
+      const re = new RegExp(expr.expression);
+      return reply(200, { rows: TOPIC_ROWS.filter((x) => re.test(x.keys[0])) });
+    }
     if (google.failQueries) return reply(500, 'backend error');
     const f = next('queries'); if (f) return reply(f, 'Google error');
     return reply(200, { rows: [{ keys: ['tadoba resort'], impressions: 80, clicks: 6, position: 5.1 }, { keys: ['stay near moharli gate'], impressions: 30, clicks: 3, position: 3.2 }] });
@@ -336,4 +351,54 @@ test('A2: the funnel carries no personal details, and a CRM outage shows as unav
   w.env.CRM_SERVICE = { fetch: async () => new Response('down', { status: 502 }) };
   const e = (await call(w.env, 'owner@iddav.com', 'GET', `${W}/funnel`)).data.stages.find((s: any) => s.key === 'enquiries');
   assert.deepEqual([e.status, e.value], ['unavailable', null]);
+});
+
+// ---------- round 17: searches grouped by topic ----------
+const T = `${W}/search-topics`;
+test('round 17: owners add topics; words are checked; managers can read but not change; other brands get 404', async () => {
+  const w = world();
+  assert.equal((await call(w.env, 'owner@iddav.com', 'POST', T, { label: 'Tadoba', words: 'Tadoba, andhari , moharli' })).status, 201);
+  const list = await call(w.env, 'mgr@iddav.com', 'GET', T);
+  assert.equal(list.status, 200);
+  assert.deepEqual(list.data.topics.map((x: any) => [x.label, x.words, x.figures]), [['Tadoba', ['tadoba', 'andhari', 'moharli'], null]], 'lower-case, trimmed, no figures before a fetch');
+  assert.equal((await call(w.env, 'mgr@iddav.com', 'POST', T, { label: 'Pench', words: 'pench' })).status, 403);
+  assert.equal((await call(w.env, 'ad@x.com', 'GET', T)).status, 404);
+  assert.equal((await call(w.env, 'owner@iddav.com', 'POST', T, { label: 'Pench', words: '' })).status, 400);
+  assert.equal((await call(w.env, 'owner@iddav.com', 'POST', T, { label: 'Bad', words: 'pench|.*' })).status, 400, 'no regular-expression tricks');
+  assert.equal((await call(w.env, 'owner@iddav.com', 'POST', T, { label: 'tadoba', words: 'x1' })).status, 409, 'same name twice');
+});
+
+test('round 17: a fetch asks Google once per topic and stores whole-word matches with an impression-weighted position', async () => {
+  const w = await connected();
+  for (const [label, words] of [['Tadoba', 'tadoba, andhari'], ['Pench', 'pench, seoni'], ['Your own name', 'iddav, sri antra']])
+    assert.equal((await call(w.env, 'owner@iddav.com', 'POST', T, { label, words })).status, 201);
+  const run = await call(w.env, 'owner@iddav.com', 'POST', `${W}/google/search_console/sync`);
+  assert.equal(run.data.status, 'complete');
+  assert.equal(google.calls.filter((c) => c.startsWith('FILTER includingRegex')).length, 3);
+  assert.ok(google.calls.includes('FILTER includingRegex \\b(tadoba|andhari)\\b'));
+  const d = (await call(w.env, 'owner@iddav.com', 'GET', T)).data;
+  const by = Object.fromEntries(d.topics.map((x: any) => [x.label, x.figures]));
+  assert.deepEqual([by.Tadoba.impressions, by.Tadoba.clicks, by.Tadoba.position, by.Tadoba.queries], [130, 10, 5.8, 2]);
+  assert.deepEqual([by.Pench.impressions, by.Pench.clicks], [40, 2], '"pencher tools" is not Pench');
+  assert.deepEqual(by['Your own name'].top.map((x: any) => x.query), ['iddav wildstay']);
+  assert.ok(d.period && d.total, 'period and the site total come with it');
+  assert.match(d.note, /do not add up/);
+  // Changing the words removes the old figures until the next fetch.
+  const id = d.topics.find((x: any) => x.label === 'Pench').id;
+  const edited = (await call(w.env, 'owner@iddav.com', 'POST', `${T}/${id}`, { label: 'Pench', words: 'pench, turia' })).data;
+  assert.equal(edited.topics.find((x: any) => x.id === id).figures, null);
+  const gone = (await call(w.env, 'owner@iddav.com', 'POST', `${T}/${id}/retire`)).data;
+  assert.ok(!gone.topics.some((x: any) => x.id === id));
+  assert.equal((await call(w.env, 'owner@iddav.com', 'POST', `${T}/${id}/retire`)).status, 404);
+});
+
+test('round 17: at most 12 topics, and the Iddav staging seed adds six once', async () => {
+  const w = world();
+  w.DB.raw.exec(readFileSync('seed_search_topics_iddav.sql', 'utf8'));
+  w.DB.raw.exec(readFileSync('seed_search_topics_iddav.sql', 'utf8'));
+  const d = (await call(w.env, 'owner@iddav.com', 'GET', T)).data;
+  assert.deepEqual(d.topics.map((x: any) => x.label), ['Tadoba', 'Pench', 'Kanha', 'Bandhavgarh', 'Central India forests', 'Your own name']);
+  for (let i = 0; i < 6; i++) assert.equal((await call(w.env, 'owner@iddav.com', 'POST', T, { label: `Extra ${i}`, words: `word${i}` })).status, 201);
+  assert.equal((await call(w.env, 'owner@iddav.com', 'POST', T, { label: 'One too many', words: 'x9' })).status, 409);
+  assert.equal((await call(w.env, 'ad@x.com', 'GET', '/v1/workspaces/ws-antardrishti/search-topics')).data.topics.length, 0, 'other brands get no Iddav topics');
 });

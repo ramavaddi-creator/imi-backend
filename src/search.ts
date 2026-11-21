@@ -332,6 +332,97 @@ async function syncSearchConsole(env: Env, r: any, token: string, runId: string,
   for (const x of qrows) stmts.push(env.DB.prepare('INSERT INTO search_queries (workspace_id, period_start, period_end, query, impressions, clicks, position, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
     .bind(r.workspace_id, start, end, String(x.keys[0]).slice(0, 200), Math.round(Number(x.impressions) || 0), Math.round(Number(x.clicks) || 0), x.position == null ? null : Number(x.position), runId));
   await env.DB.batch(stmts);
+  await syncTopics(env, r.workspace_id, ask, runId, start, end, counts);
+}
+
+// ---------- Round 17: searches grouped by topic ----------
+// Each topic is a list of words; Google is asked for the searches containing any of them
+// (one filtered request per topic). Google leaves out rare searches for privacy, and one
+// search can belong to two topics, so topics never add up to the total.
+export const MAX_TOPICS = 12;
+const WORD_RE = /^[a-z0-9][a-z0-9 .'&-]{1,39}$/;
+const escapeRe = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const topicRegex = (words: string[]) => `\\b(${words.map(escapeRe).join('|')})\\b`;
+
+async function syncTopics(env: Env, ws: string, ask: (b: object) => Promise<any>, runId: string, start: string, end: string, counts: Counts) {
+  const topics = (await env.DB.prepare('SELECT id, words_json FROM search_topics WHERE workspace_id = ? AND retired_at IS NULL ORDER BY sort, created_at LIMIT ?').bind(ws, MAX_TOPICS).all<any>()).results ?? [];
+  for (const tp of topics) {
+    const words: string[] = JSON.parse(tp.words_json || '[]');
+    if (!words.length) continue;
+    const d = await ask({ startDate: start, endDate: end, dimensions: ['query'], rowLimit: 1000, dataState: 'final',
+      dimensionFilterGroups: [{ filters: [{ dimension: 'query', operator: 'includingRegex', expression: topicRegex(words) }] }] });
+    counts.pages++;
+    const rows = (Array.isArray(d.rows) ? d.rows : []).filter((x: any) => typeof x.keys?.[0] === 'string').map((x: any) => ({
+      query: String(x.keys[0]).slice(0, 200), impressions: Math.round(Number(x.impressions) || 0), clicks: Math.round(Number(x.clicks) || 0), position: x.position == null ? null : Number(x.position) }));
+    const imp = rows.reduce((n: number, x: any) => n + x.impressions, 0), clk = rows.reduce((n: number, x: any) => n + x.clicks, 0);
+    const weighted = rows.filter((x: any) => x.position != null && x.impressions > 0);
+    const wImp = weighted.reduce((n: number, x: any) => n + x.impressions, 0);
+    const pos = wImp ? Math.round((weighted.reduce((n: number, x: any) => n + x.position * x.impressions, 0) / wImp) * 10) / 10 : null;
+    const top = [...rows].sort((a: any, b: any) => b.clicks - a.clicks || b.impressions - a.impressions).slice(0, 5);
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM search_topic_figures WHERE workspace_id = ? AND topic_id = ?').bind(ws, tp.id),
+      env.DB.prepare(`INSERT INTO search_topic_figures (workspace_id, topic_id, period_start, period_end, impressions, clicks, position, queries, top_json, run_id, retrieved_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(ws, tp.id, start, end, imp, clk, pos, rows.length, JSON.stringify(top), runId, iso()),
+    ]);
+  }
+}
+
+function cleanTopic(body: any): { label: string; words: string[] } {
+  const label = String(body?.label ?? '').trim().replace(/\s+/g, ' ');
+  if (label.length < 2 || label.length > 40) throw new HttpError(400, 'Give the topic a short name (2 to 40 characters), for example "Pench".');
+  const raw: unknown[] = Array.isArray(body?.words) ? body.words : String(body?.words ?? '').split(',');
+  const words = [...new Set(raw.map((w) => String(w).trim().toLowerCase().replace(/\s+/g, ' ')).filter(Boolean))];
+  if (!words.length) throw new HttpError(400, 'Add at least one word, for example: pench, seoni, turia.');
+  if (words.length > 20) throw new HttpError(400, 'Use at most 20 words per topic.');
+  const bad = words.find((w) => !WORD_RE.test(w));
+  if (bad) throw new HttpError(400, `"${bad}" cannot be used: words use letters, numbers, spaces, - . ' & only (2 to 40 characters).`);
+  return { label, words };
+}
+
+export async function listTopics(env: Env, ws: string) {
+  const topics = (await env.DB.prepare('SELECT id, label, words_json, sort, updated_at FROM search_topics WHERE workspace_id = ? AND retired_at IS NULL ORDER BY sort, created_at').bind(ws).all<any>()).results ?? [];
+  const figs = (await env.DB.prepare('SELECT * FROM search_topic_figures WHERE workspace_id = ?').bind(ws).all<any>()).results ?? [];
+  const latest = figs.reduce((m: any, f: any) => (!m || f.period_end > m.period_end ? f : m), null);
+  const total = latest ? await env.DB.prepare('SELECT SUM(impressions) AS imp, SUM(clicks) AS clk FROM search_daily WHERE workspace_id = ? AND date BETWEEN ? AND ?')
+    .bind(ws, latest.period_start, latest.period_end).first<any>() : null;
+  return {
+    period: latest ? { start: latest.period_start, end: latest.period_end, retrievedAt: latest.retrieved_at } : null,
+    total: total?.imp != null ? { impressions: total.imp, clicks: total.clk } : null,
+    maxTopics: MAX_TOPICS,
+    topics: topics.map((tp: any) => {
+      const f = figs.find((x: any) => x.topic_id === tp.id);
+      return { id: tp.id, label: tp.label, words: JSON.parse(tp.words_json), updatedAt: tp.updated_at,
+        figures: f ? { impressions: f.impressions, clicks: f.clicks, position: f.position, queries: f.queries, top: JSON.parse(f.top_json), periodStart: f.period_start, periodEnd: f.period_end } : null };
+    }),
+    note: 'Search Console source. Google leaves out rare searches for privacy, and one search can belong to two topics, so the topics do not add up to the total.',
+  };
+}
+
+export async function saveTopic(env: Env, ws: string, email: string, id: string | null, body: any) {
+  const { label, words } = cleanTopic(body);
+  if (id) {
+    const cur = await env.DB.prepare('SELECT id FROM search_topics WHERE id = ? AND workspace_id = ? AND retired_at IS NULL').bind(id, ws).first();
+    if (!cur) throw new HttpError(404, 'Topic not found');
+    // Changed words make old figures wrong: they are removed and come back with the next fetch.
+    await env.DB.batch([
+      env.DB.prepare('UPDATE search_topics SET label = ?, words_json = ?, updated_at = ? WHERE id = ?').bind(label, JSON.stringify(words), iso(), id),
+      env.DB.prepare('DELETE FROM search_topic_figures WHERE topic_id = ?').bind(id),
+    ]);
+  } else {
+    const n = await env.DB.prepare('SELECT COUNT(*) AS n, MAX(sort) AS s FROM search_topics WHERE workspace_id = ? AND retired_at IS NULL').bind(ws).first<any>();
+    if ((n?.n ?? 0) >= MAX_TOPICS) throw new HttpError(409, `A brand can have up to ${MAX_TOPICS} topics. Remove one first.`);
+    const dup = await env.DB.prepare('SELECT 1 FROM search_topics WHERE workspace_id = ? AND retired_at IS NULL AND lower(label) = lower(?)').bind(ws, label).first();
+    if (dup) throw new HttpError(409, `There is already a topic called "${label}".`);
+    await env.DB.prepare('INSERT INTO search_topics (id, workspace_id, label, words_json, sort, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(crypto.randomUUID(), ws, label, JSON.stringify(words), (n?.s ?? 0) + 1, email, iso(), iso()).run();
+  }
+  return listTopics(env, ws);
+}
+
+export async function retireTopic(env: Env, ws: string, id: string) {
+  const r = await env.DB.prepare('UPDATE search_topics SET retired_at = ? WHERE id = ? AND workspace_id = ? AND retired_at IS NULL').bind(iso(), id, ws).run();
+  if (!r.meta?.changes) throw new HttpError(404, 'Topic not found');
+  return listTopics(env, ws);
 }
 
 async function syncGa4(env: Env, r: any, token: string, runId: string, start: string, end: string, counts: Counts, retries: string[]) {
