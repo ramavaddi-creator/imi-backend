@@ -38,6 +38,8 @@ function world(over: Record<string, unknown> = {}) {
          VALUES (?,?,1,'bottom',?,'original',?,'seed',?,?)`, id, k, headline, status, at, at);
   content('c1', 'k1', 'IDDAV-ONLY tiger dawn walk', 'ready');
   content('c2', 'k2', 'ANTARDRISHTI-ONLY timing window', 'ready');
+  run(`INSERT INTO drafts (id, workspace_id, headline, caption, source, created_by, created_at, updated_at) VALUES
+       ('dr1','ws-iddav','IDDAV-ONLY tiger dawn walk','c','Written here','seed',?,?), ('dr2','ws-antardrishti','ANTARDRISHTI-ONLY timing window','c','Written here','seed',?,?)`, at, at, at, at);
   run(`INSERT INTO decision_items (id, code, domain, title, problem_statement, associated_record_code, approval_class, approval_status, approver_required,
         retrospective, options_considered_json, selected_option, rationale, confidence_level, confidence_reason, workspace_id)
        VALUES ('d1','DEC-0101','x','IDDAV-ONLY decision','p','R','A','pending','Owner','none','[]','s','r','low','r','ws-iddav'),
@@ -78,11 +80,9 @@ test('M1: Today for the authorised brand shows only that brand\'s data, each ite
   assert.deepEqual(t.data.upcoming, []); assert.deepEqual(t.data.notes, []);
 });
 
-test('M1: an approved post no longer asks for approval', async () => {
+test('M1: an approved draft no longer asks for approval', async () => {
   const env = world();
-  const { contentHash } = await import('../src/studio.ts');
-  const c = env.DB.raw.prepare("SELECT * FROM contents WHERE id = 'c1'").get();
-  env.DB.raw.prepare("INSERT INTO approvals (id, content_id, approval_class, approved_by, content_hash, approved_at) VALUES ('a1','c1','A',?,?,'2026-11-02')").run(OWNER, await contentHash(c, []));
+  env.DB.raw.prepare("UPDATE drafts SET status = 'approved', approved_by = ?, approved_at = '2026-11-02', approved_version = 1 WHERE id = 'dr1'").run(OWNER);
   const t = await body(await as(OWNER, env, '/v1/workspaces/ws-iddav/today'));
   assert.ok(!t.data.needsYou.some((x: any) => x.kind === 'approve_post'));
 });
@@ -186,6 +186,8 @@ test('the staging seed loads on top of schema_v9 and keeps the two brands apart'
   env.DB.raw.prepare("INSERT INTO memberships (id, tenant_id, workspace_id, email, role, created_by, created_at) VALUES ('m-ad-owner','tnt-rama','ws-antardrishti',?, 'owner','setup','2026-11-08')").run(OWNER);
   const iddav = JSON.stringify((await body(await as(OWNER, env, '/v1/workspaces/ws-iddav/today'))).data);
   const ad = JSON.stringify((await body(await as(OWNER, env, '/v1/workspaces/ws-antardrishti/today'))).data);
-  assert.ok(iddav.includes('SAMPLE Why do tigers') && !iddav.includes('ANTARDRISHTI-ONLY'));
-  assert.ok(ad.includes('ANTARDRISHTI-ONLY') && !ad.includes('SAMPLE Why do tigers'));
+  assert.ok(iddav.includes('IDDAV-ONLY') && !iddav.includes('ANTARDRISHTI-ONLY'));
+  assert.ok(!ad.includes('IDDAV-ONLY'));
+  // The seeded poster-studio sample has no screen in IMI ONE, so Today never links to it.
+  assert.ok(!iddav.includes('SAMPLE Why do tigers'), 'no task that opens an empty Drafts page');
 });

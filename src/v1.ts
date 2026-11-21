@@ -17,7 +17,6 @@ import { membershipsOf, requireWorkspace, type Membership } from './tenancy';
 import { crmFetch, crmMode } from './crm_bridge';
 import { can } from './tenancy';
 import { legacyWorkspace } from './aibudget';
-import { contentHash } from './studio';
 import { usage as aiUsage, setBudget as setAiBudget } from './aibudget';
 import { listMembers, addMember, changeRole, revokeMember, listFacts, addFact, retireFact, updateProfile, getProfile, toggleProvider, activity } from './admin';
 import { listProviders, addProvider, preparePrompt, createDraft, listDrafts, editDraft, approveDraft, markPosted, putMedia, getMedia, scheduleDraft, calendar, recordOutcome } from './create';
@@ -106,17 +105,9 @@ async function today(env: Env, ws: Membership) {
   const id = ws.workspace_id;
   const needsYou: unknown[] = [];
 
-  // Posts ready to go whose current version has no valid approval.
-  const { results: ready } = await env.DB.prepare(
-    `SELECT c.* FROM contents c JOIN campaigns k ON k.id = c.campaign_id
-     WHERE k.workspace_id = ? AND c.status = 'ready' ORDER BY c.updated_at LIMIT 10`).bind(id).all<any>();
-  for (const c of ready ?? []) {
-    const pubs = (await env.DB.prepare('SELECT * FROM publications WHERE content_id = ?').bind(c.id).all<any>()).results ?? [];
-    const hash = await contentHash(c, pubs);
-    const ok = await env.DB.prepare('SELECT 1 FROM approvals WHERE content_id = ? AND revoked_at IS NULL AND content_hash = ? LIMIT 1').bind(c.id, hash).first();
-    if (!ok) needsYou.push({ id: `content-${c.id}`, kind: 'approve_post', subject: c.headline, title: `Approve "${c.headline}"`,
-      why: 'It will not go out until you approve it.', action: { label: 'Review post', screen: 'create', ref: c.id } });
-  }
+  // Posts to approve come from Drafts only: that is the screen "Review post" opens.
+  // (The older poster-studio table, contents, has no screen in IMI ONE, so a task
+  // from it led to an empty Drafts page. It is no longer listed here.)
   // Drafts waiting for the owner's approval (round 2).
   const { results: drafts } = await env.DB.prepare(
     "SELECT id, headline FROM drafts WHERE workspace_id = ? AND status = 'draft' ORDER BY updated_at DESC LIMIT 3").bind(id).all<any>();
